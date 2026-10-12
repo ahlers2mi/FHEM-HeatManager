@@ -27,6 +27,14 @@ FHEM-Modul `FHEM/98_HeatManager.pm` zur Heizungsoptimierung. Zuständig: Session
   nach Freigabe des Nutzers.
 - Installation beim Nutzer: `update add https://raw.githubusercontent.com/ahlers2mi/FHEM-HeatManager/main/controls_HeatManager.txt`,
   dann `update all` und `reload 98_HeatManager` (nach jedem Update reload).
+- **Nie Funktionen in den Namensraum `main` importieren** (`use JSON::PP ();`,
+  `use Time::Local ();`, Aufruf voll qualifiziert). v0.4.0 hatte `use JSON::PP;` –
+  das überschrieb `main::to_json`; JSON::PP::to_json stirbt absichtlich
+  („has been renamed to encode_json“), 98_DoRemote.pm ruft to_json -> Main-FHEM
+  stürzte am 12.10.2026 beim Update und bei jedem Neustart ab.
+- Timer-Callbacks immer über `HeatManager_Safe` (eval) – ein die() im Timer beendet FHEM.
+- MAX!-Funk: weekProfile sind viele Telegramme; der CUL hat ein Sendekontingent
+  (1 %-Regel, „not enough credit“). Profile nur einzeln mit Minutenabstand senden.
 - Keine github.com-URL in der .pm (Anon-Spiegel-Problem wie beim FHEM-MCP).
 - Repo ist öffentlich: keine Tokens, Passwörter, IPs mit Zugangsdaten.
 
