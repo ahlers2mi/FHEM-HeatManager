@@ -1,6 +1,6 @@
 ##############################################################################
 # $Id: 98_HeatManager.pm $
-# Version:  v0.1.0
+# Version:  v0.2.0
 #
 # HeatManager - Heizungsoptimierung fuer FHEM
 #
@@ -9,6 +9,10 @@
 #                  Ventilstellungen der Heizkoerperthermostate an.
 # Regel "standby": schaltet den Heizkreis bei fast geschlossenen Ventilen in
 #                  Standby - mit Hysterese und Mindestverweildauer.
+# Regel "klima":   Klimageraet heizt mit, wenn ein Raumventil lange weit offen
+#                  steht (Akku/Netz, Zeitfenster, Start-Begrenzung).
+# Regel "ofen":    Kachelofen brennt/speichert -> Thermostate der beheizten
+#                  Raeume zuruecknehmen, danach wiederherstellen.
 #
 # Standard ist der Simulationsmodus (attr hmSimulate 1): das Modul rechnet und
 # schreibt Readings, schaltet aber nichts.
@@ -21,7 +25,7 @@ use strict;
 use warnings;
 use Time::Local;
 
-my $HM_VERSION = "0.1.0";
+my $HM_VERSION = "0.2.0";
 
 my %HM_defaults = (
   hmThermostats      => "type=HeatingThermostat",
@@ -46,8 +50,31 @@ my %HM_defaults = (
   hmStandbyModeOn    => "Standby",
   hmStandbyModeOff   => "Timer",
   hmSimulate         => 1,
-  hmRules            => "curve,standby",
+  hmRules            => "curve,standby,klima,ofen",
   hmNotifyCmd        => "",
+  hmOutdoorSensor    => "Mobil3data:temperature",
+  hmOvenSensor       => "MQTT2_MAX6675_01:Temperatur",
+  hmOvenTileSensor   => "XMI_158d00045d0119:temperature",
+  hmOvenBurn         => 60,
+  hmOvenStore        => 35,
+  hmOvenTemp         => 17,
+  hmOvenRooms        => "MAX_040549 MAX_0437c3 MAX_06e2ff",
+  hmClimaRoom        => "MAX_040549",
+  hmClimaDevice      => "d_clima_gaestezimmer",
+  hmClimaAc          => "net_ac_86E6",
+  hmClimaGate        => "d_klima_heizgrenze",
+  hmClimaAffected    => "MAX_0404e5 MAX_040549",
+  hmClimaValve       => 50,
+  hmClimaValveMinutes => 60,
+  hmClimaTimes       => "07:00-20:30",
+  hmClimaSetTemp     => 26,
+  hmClimaSoc         => 60,
+  hmClimaSocReading  => "rem_MQTT2_SMART_SHUNT1:data_state_of_charge_shunt_state",
+  hmClimaGrid        => 0,
+  hmClimaMinOutdoor  => 3,
+  hmClimaMinRun      => 60,
+  hmClimaMinOff      => 60,
+  hmClimaMaxStarts   => 2,
 );
 
 sub HeatManager_Initialize {
@@ -57,12 +84,16 @@ sub HeatManager_Initialize {
   $hash->{SetFn}    = "HeatManager_Set";
   $hash->{GetFn}    = "HeatManager_Get";
   $hash->{AttrFn}   = "HeatManager_Attr";
-  $hash->{AttrList} = "disable:0,1 hmSimulate:1,0 hmRules:multiple-strict,curve,standby "
+  $hash->{AttrList} = "disable:0,1 hmSimulate:1,0 hmRules:multiple-strict,curve,standby,klima,ofen "
     . "hmThermostats hmIgnore hmRoomSensors:textField-long hmHeater hmFineReading hmModeReading "
     . "hmFineMin hmFineMax hmCheckTime hmSampleInterval hmValveLow hmValveHigh "
     . "hmColdDelta hmColdMinutes hmRampIgnore hmMinSamplesPct "
     . "hmStandbyLow hmStandbyHigh hmStandbyMinTime hmStandbyModeOn hmStandbyModeOff "
-    . "hmNotifyCmd:textField-long "
+    . "hmNotifyCmd:textField-long hmOutdoorSensor "
+    . "hmOvenSensor hmOvenTileSensor hmOvenBurn hmOvenStore hmOvenTemp hmOvenRooms "
+    . "hmClimaRoom hmClimaDevice hmClimaAc hmClimaGate hmClimaAffected hmClimaValve "
+    . "hmClimaValveMinutes hmClimaTimes hmClimaSetTemp hmClimaSoc hmClimaSocReading "
+    . "hmClimaGrid:0,1 hmClimaMinOutdoor hmClimaMinRun hmClimaMinOff hmClimaMaxStarts "
     . $readingFnAttributes;
   return;
 }
@@ -108,7 +139,7 @@ sub HeatManager_Attr {
   if ($cmd eq "set" && $attr eq "hmCheckTime") {
     return "hmCheckTime: HH:MM erwartet" if ($val !~ /^\d\d:\d\d$/);
   }
-  if ($cmd eq "set" && $attr =~ /^hm(FineMin|FineMax|SampleInterval|ValveLow|ValveHigh|ColdDelta|ColdMinutes|RampIgnore|MinSamplesPct|StandbyLow|StandbyHigh|StandbyMinTime)$/) {
+  if ($cmd eq "set" && $attr =~ /^hm(FineMin|FineMax|SampleInterval|ValveLow|ValveHigh|ColdDelta|ColdMinutes|RampIgnore|MinSamplesPct|StandbyLow|StandbyHigh|StandbyMinTime|OvenBurn|OvenStore|OvenTemp|ClimaValve|ClimaValveMinutes|ClimaSetTemp|ClimaSoc|ClimaMinOutdoor|ClimaMinRun|ClimaMinOff|ClimaMaxStarts)$/) {
     return "$attr: Zahl erwartet" if ($val !~ /^-?\d+(\.\d+)?$/);
   }
   if ($attr eq "hmCheckTime" && $init_done && $hash) {
@@ -151,8 +182,15 @@ sub HeatManager_Sample {
   my $smap = HeatManager_SensorMap($name);
   my $ramp = HeatManager_A($name, "hmRampIgnore") * 60;
   my $cd   = HeatManager_A($name, "hmColdDelta");
-  my (%valve, %cold, %ramp);
+  my (%valve, %cold, %ramp, %excl);
   my ($sum, $n) = (0, 0);
+
+  # Ofen und Klima beeinflussen Ventile -> diese Raeume nicht fuer die Heizkurve werten
+  my $oven = HeatManager_RuleOn($name, "ofen") ? HeatManager_Oven($hash) : "aus";
+  if ($oven ne "aus") { $excl{$_} = "ofen" for split(/[\s,]+/, HeatManager_A($name, "hmOvenRooms")); }
+  my $acHeat = ReadingsVal(HeatManager_A($name, "hmClimaAc"), "power", "Off") eq "On"
+            && ReadingsVal(HeatManager_A($name, "hmClimaAc"), "mode", "") =~ /heat/i;
+  if ($acHeat) { $excl{$_} = "klima" for split(/[\s,]+/, HeatManager_A($name, "hmClimaAffected")); }
 
   foreach my $t (HeatManager_Thermostats($name)) {
     my $des = ReadingsVal($t, "desiredTemperature", "off");
@@ -165,7 +203,9 @@ sub HeatManager_Sample {
       $hash->{helper}{desiredChange}{$t} = $now if (defined($old));
     }
     $sum += $v; $n++;
+    $hash->{helper}{valveNow}{$t} = $v;
     next if ($des !~ /^[\d.]+$/);                       # off/on: keine Bewertung
+    next if ($excl{$t});                                # Ofen/Klima
     if (($now - ($hash->{helper}{desiredChange}{$t} // 0)) < $ramp) {
       $ramp{$t} = 1;
       next;
@@ -186,9 +226,12 @@ sub HeatManager_Sample {
   readingsBeginUpdate($hash);
   readingsBulkUpdate($hash, "valve_avg_now", sprintf("%.1f", $avg));
   readingsBulkUpdate($hash, "ramp_rooms", join(",", sort keys %ramp) || "none");
+  readingsBulkUpdate($hash, "excluded_rooms", join(",", map { "$_:$excl{$_}" } sort keys %excl) || "none");
   readingsEndUpdate($hash, 1);
 
   HeatManager_Standby($hash, $avg) if (HeatManager_RuleOn($name, "standby"));
+  HeatManager_Clima($hash, $hash->{helper}{valveNow}{HeatManager_A($name, "hmClimaRoom")})
+    if (HeatManager_RuleOn($name, "klima"));
   return;
 }
 
@@ -234,7 +277,7 @@ sub HeatManager_ScheduleCheck {
   my $name = $hash->{NAME};
   $time //= HeatManager_A($name, "hmCheckTime");
   my ($h, $m) = split(/:/, $time);
-  my @lt = localtime();
+  my @lt = localtime(time());
   my $next = timelocal(0, $m, $h, $lt[3], $lt[4], $lt[5]);
   $next += 86400 if ($next <= time() + 5);
   RemoveInternalTimer("check:$name");
@@ -396,6 +439,202 @@ sub HeatManager_Notify {
   return;
 }
 
+
+# ------------------------------------------------------------------- Ofen ---
+# Kachelofen: Stahleinsatz > hmOvenBurn -> "brennt", Kacheln > hmOvenStore ->
+# "speichert", sonst "aus" (Kachel-Hysterese 2 K). Solange der Ofen brennt oder
+# speichert, gehen die Thermostate in hmOvenRooms auf hmOvenTemp; danach wird
+# der vorherige Zustand (auto oder Wert) wiederhergestellt.
+
+sub HeatManager_SensorVal {
+  my ($spec) = @_;
+  my ($d, $r) = split(/:/, $spec // "");
+  return undef if (!$d || !$r);
+  my $v = ReadingsVal($d, $r, undef);
+  return (defined($v) && $v =~ /^(-?[\d.]+)/) ? $1 : undef;
+}
+
+sub HeatManager_OvenState {
+  my ($hash) = @_;
+  my $name  = $hash->{NAME};
+  my $ins   = HeatManager_SensorVal(HeatManager_A($name, "hmOvenSensor"));
+  my $tile  = HeatManager_SensorVal(HeatManager_A($name, "hmOvenTileSensor"));
+  my $old   = ReadingsVal($name, "oven_state", "aus");
+  my $store = HeatManager_A($name, "hmOvenStore");
+  my $st = "aus";
+  if (defined($ins) && $ins > HeatManager_A($name, "hmOvenBurn")) {
+    $st = "brennt";
+  } elsif (defined($tile) && ($tile > $store || ($old ne "aus" && $tile > $store - 2))) {
+    $st = "speichert";
+  }
+  return ($st, $ins, $tile);
+}
+
+sub HeatManager_Oven {
+  my ($hash) = @_;
+  my $name = $hash->{NAME};
+  my ($st, $ins, $tile) = HeatManager_OvenState($hash);
+  my $old  = ReadingsVal($name, "oven_state", "aus");
+  my $otmp = HeatManager_A($name, "hmOvenTemp");
+  my $sim  = HeatManager_A($name, "hmSimulate");
+
+  readingsBeginUpdate($hash);
+  readingsBulkUpdate($hash, "oven_state", $st);
+  readingsBulkUpdate($hash, "oven_insert", $ins // "?");
+  readingsBulkUpdate($hash, "oven_tiles", $tile // "?");
+  readingsEndUpdate($hash, 1);
+
+  foreach my $t (split(/[\s,]+/, HeatManager_A($name, "hmOvenRooms"))) {
+    next if (!$t || !defined($defs{$t}));
+    my $prevRd = "oven_prev_$t";
+    my $prev   = ReadingsVal($name, $prevRd, "");
+    my $des    = ReadingsVal($t, "desiredTemperature", "off");
+    if ($st ne "aus") {
+      next if ($prev ne "");                                   # schon abgesenkt
+      next if ($des !~ /^[\d.]+$/ || $des <= $otmp);           # aus/niedriger: nichts tun
+      my $mode = ReadingsVal($t, "mode", "manual") eq "auto" ? "auto" : $des;
+      readingsSingleUpdate($hash, $prevRd, $mode, 0);
+      HeatManager_Do($hash, "set $t desiredTemperature $otmp", "ofen",
+                     "Ofen $st: $t auf $otmp (vorher $mode)");
+    } elsif ($prev ne "") {
+      # nur zuruecksetzen, wenn der Wert noch unserer ist
+      if ($sim || ($des =~ /^[\d.]+$/ && $des == $otmp)) {
+        HeatManager_Do($hash, "set $t desiredTemperature $prev", "ofen",
+                       "Ofen aus: $t zurueck auf $prev");
+      }
+      CommandDeleteReading(undef, "$name $prevRd");
+    }
+  }
+  if ($st ne $old) {
+    readingsSingleUpdate($hash, "oven_since", FmtDateTime(time()), 1);
+    Log3($name, 3, "$name: Ofen $old -> $st");
+  }
+  return $st;
+}
+
+# ------------------------------------------------------------------ Klima ---
+# Steht das Ventil von hmClimaRoom im Mittel der letzten hmClimaValveMinutes
+# ueber hmClimaValve %, heizt das Klimageraet (ueber dessen Automatik-Dummy)
+# mit, statt dass die Heizkurve steigt. Nur im Zeitfenster, mit Freigabe der
+# Klima-Heizgrenze, mit genug Akku (oder hmClimaGrid 1), hoechstens
+# hmClimaMaxStarts Starts pro Tag und mit Mindestlauf-/Pausenzeiten.
+
+sub HeatManager_InWindow {
+  my ($win) = @_;
+  my @lt = localtime(time());
+  my $now = sprintf("%02d:%02d", $lt[2], $lt[1]);
+  foreach my $w (split(/[\s,]+/, $win // "")) {
+    my ($a, $b) = split(/-/, $w);
+    next if (!$a || !$b);
+    return 1 if ($now ge $a && $now lt $b);
+  }
+  return 0;
+}
+
+sub HeatManager_ClimaEnergyOk {
+  my ($name, $margin) = @_;
+  my $soc = HeatManager_SensorVal(HeatManager_A($name, "hmClimaSocReading"));
+  return (1, "Akku $soc %") if (defined($soc) && $soc >= HeatManager_A($name, "hmClimaSoc") - ($margin // 0));
+  if (HeatManager_A($name, "hmClimaGrid")) {
+    my $out = HeatManager_SensorVal(HeatManager_A($name, "hmOutdoorSensor"));
+    return (1, "Netzstrom, aussen $out C")
+      if (defined($out) && $out >= HeatManager_A($name, "hmClimaMinOutdoor"));
+  }
+  return (0, "Akku " . ($soc // "?") . " %");
+}
+
+sub HeatManager_Clima {
+  my ($hash, $valveNow) = @_;
+  my $name  = $hash->{NAME};
+  my $room  = HeatManager_A($name, "hmClimaRoom");
+  my $dummy = HeatManager_A($name, "hmClimaDevice");
+  my $ac    = HeatManager_A($name, "hmClimaAc");
+  my $now   = time();
+  return if (!$room || !defined($defs{$dummy}));
+
+  # gleitendes Ventilmittel des Raums
+  my $win = HeatManager_A($name, "hmClimaValveMinutes") * 60;
+  push @{$hash->{helper}{climaValve}}, [$now, $valveNow] if (defined($valveNow));
+  @{$hash->{helper}{climaValve}} = grep { $now - $_->[0] <= $win } @{$hash->{helper}{climaValve} // []};
+  my @v = map { $_->[1] } @{$hash->{helper}{climaValve}};
+  my $avg = @v ? (eval { my $s = 0; $s += $_ for @v; $s }) / @v : 0;
+  my $siv  = HeatManager_A($name, "hmSampleInterval");
+  my $full = (@v && ($now - $hash->{helper}{climaValve}[0][0]) >= $win - $siv) ? 1 : 0;
+
+  # Tageszaehler
+  my @lt = localtime(time());
+  my $day = sprintf("%04d-%02d-%02d", $lt[5] + 1900, $lt[4] + 1, $lt[3]);
+  if (ReadingsVal($name, "clima_day", "") ne $day) {
+    readingsBeginUpdate($hash);
+    readingsBulkUpdate($hash, "clima_day", $day);
+    readingsBulkUpdate($hash, "clima_starts_today", 0);
+    readingsEndUpdate($hash, 0);
+  }
+
+  my $state  = ReadingsVal($name, "clima_state", "aus");          # an = von uns gestartet
+  my $since  = ReadingsVal($name, "clima_since", 0);
+  my $inWin  = HeatManager_InWindow(HeatManager_A($name, "hmClimaTimes"));
+  my $frei   = ReadingsVal(HeatManager_A($name, "hmClimaGate"), "freigabe", "on") eq "on";
+  my $auto   = ReadingsVal($dummy, "mode", "") eq "auto";
+  my $acOn   = ReadingsVal($ac, "power", "Off") eq "On";
+  my ($eok, $etxt) = HeatManager_ClimaEnergyOk($name, $state eq "an" ? 10 : 0);
+  my $smap   = HeatManager_SensorMap($name);
+  my $rtemp  = $smap->{$room} ? HeatManager_SensorVal("$smap->{$room}[0]:$smap->{$room}[1]") : undef;
+  my $target = AttrVal($room, "desiredTemperature", 20);
+
+  readingsSingleUpdate($hash, "clima_valve_avg", sprintf("%.0f", $avg), 0);
+
+  if ($state eq "an") {
+    if (!$auto) {   # Nutzer hat uebernommen
+      readingsBeginUpdate($hash);
+      readingsBulkUpdate($hash, "clima_state", "aus");
+      readingsBulkUpdate($hash, "clima_info", "vom Nutzer uebernommen (mode " . ReadingsVal($dummy, "mode", "") . ")");
+      readingsEndUpdate($hash, 1);
+      return;
+    }
+    my $run = $now - $since;
+    my $why = !$inWin ? "Zeitfenster vorbei"
+            : !$frei ? "Heizgrenze gesperrt"
+            : ($run >= HeatManager_A($name, "hmClimaMinRun") * 60 && !$eok) ? "Energie: $etxt"
+            : ($run >= HeatManager_A($name, "hmClimaMinRun") * 60 && defined($rtemp) && $rtemp >= $target + 0.5)
+              ? sprintf("Raum %.1f C erreicht", $rtemp) : "";
+    if ($why) {
+      readingsBeginUpdate($hash);
+      readingsBulkUpdate($hash, "clima_state", "aus");
+      readingsBulkUpdate($hash, "clima_since", $now);
+      readingsBulkUpdate($hash, "clima_info", "aus: $why");
+      readingsEndUpdate($hash, 1);
+      HeatManager_Do($hash, "set $dummy autoTemperature aus", "klima", "Klima aus ($why)");
+    }
+    return;
+  }
+
+  # Start pruefen
+  my @no;
+  push @no, sprintf("Ventil %.0f %%", $avg) if (!$full || $avg < HeatManager_A($name, "hmClimaValve"));
+  push @no, "Zeitfenster" if (!$inWin);
+  push @no, "Heizgrenze" if (!$frei);
+  push @no, "Klima nicht auf auto" if (!$auto);
+  push @no, "Klima laeuft schon" if ($acOn);
+  push @no, $etxt if (!$eok);
+  push @no, "max. Starts" if (ReadingsVal($name, "clima_starts_today", 0) >= HeatManager_A($name, "hmClimaMaxStarts"));
+  push @no, "Pause" if ($now - $since < HeatManager_A($name, "hmClimaMinOff") * 60);
+  if (@no) {
+    readingsSingleUpdate($hash, "clima_info", "kein Start: " . join(", ", @no), 0);
+    return;
+  }
+  my $tset = HeatManager_A($name, "hmClimaSetTemp");
+  readingsBeginUpdate($hash);
+  readingsBulkUpdate($hash, "clima_state", "an");
+  readingsBulkUpdate($hash, "clima_since", $now);
+  readingsBulkUpdate($hash, "clima_starts_today", ReadingsVal($name, "clima_starts_today", 0) + 1);
+  readingsBulkUpdate($hash, "clima_info", sprintf("an: %s Ventil %.0f %%, %s", $room, $avg, $etxt));
+  readingsEndUpdate($hash, 1);
+  HeatManager_Do($hash, "set $dummy autoTemperature $tset", "klima",
+                 sprintf("Klima an (%s Ventil %.0f %%, %s)", $room, $avg, $etxt));
+  return;
+}
+
 # ------------------------------------------------------------- set / get ---
 
 sub HeatManager_Set {
@@ -420,7 +659,10 @@ sub HeatManager_Get {
     sprintf("Ventile Mittel: %.1f %%", $e->{valveAvg}),
     "Hoechstes Ventil: " . ($e->{maxRoom} ? sprintf("%s %.0f %%", $e->{maxRoom}, $e->{maxValve}) : "-"),
     "Zu kalt:         " . ($e->{coldRoom} ? "$e->{coldRoom} $e->{coldMin} min" : "-"),
-    "Entscheidung:    " . ($e->{step} > 0 ? "+1" : $e->{step} < 0 ? "-1" : "0") . " - $e->{reason}");
+    "Entscheidung:    " . ($e->{step} > 0 ? "+1" : $e->{step} < 0 ? "-1" : "0") . " - $e->{reason}",
+    "Ofen:            " . ReadingsVal($name, "oven_state", "?") . " (Einsatz " . ReadingsVal($name, "oven_insert", "?") . ", Kacheln " . ReadingsVal($name, "oven_tiles", "?") . ")",
+    "Klima:           " . ReadingsVal($name, "clima_state", "aus") . " - " . ReadingsVal($name, "clima_info", "-"),
+    "Ausgenommen:     " . ReadingsVal($name, "excluded_rooms", "none"));
 }
 
 1;
@@ -465,6 +707,16 @@ sub HeatManager_Get {
     <li><code>hmRampIgnore</code> - Minuten nach Sollwertsprung ohne Bewertung (90)</li>
     <li><code>hmStandbyLow</code>/<code>hmStandbyHigh</code>/<code>hmStandbyMinTime</code> - Standby-Hysterese (1.5/3 %, 30 min)</li>
     <li><code>hmNotifyCmd</code> - FHEM-Befehl fuer Meldungen, <code>$MSG</code> wird ersetzt</li>
+    <li><b>Ofen</b>: <code>hmOvenSensor</code>, <code>hmOvenTileSensor</code> (Geraet:Reading),
+        <code>hmOvenBurn</code> (60), <code>hmOvenStore</code> (35), <code>hmOvenTemp</code> (17),
+        <code>hmOvenRooms</code> - Thermostate, die zurueckgenommen werden</li>
+    <li><b>Klima</b>: <code>hmClimaRoom</code> (Thermostat, dessen Ventil ausloest), <code>hmClimaDevice</code>
+        (Automatik-Dummy, gesetzt wird <code>autoTemperature</code>), <code>hmClimaAc</code>, <code>hmClimaGate</code>
+        (Reading <code>freigabe</code>), <code>hmClimaAffected</code>, <code>hmClimaValve</code> (50 %),
+        <code>hmClimaValveMinutes</code> (60), <code>hmClimaTimes</code> (07:00-20:30), <code>hmClimaSetTemp</code> (26),
+        <code>hmClimaSoc</code>/<code>hmClimaSocReading</code> (Akku 60 %), <code>hmClimaGrid</code> (0 = nur Akku),
+        <code>hmClimaMinOutdoor</code>, <code>hmClimaMinRun</code>/<code>hmClimaMinOff</code> (60 min), <code>hmClimaMaxStarts</code> (2)</li>
+    <li><code>hmOutdoorSensor</code> - Aussentemperatur (Mobil3data:temperature)</li>
   </ul>
 </ul>
 

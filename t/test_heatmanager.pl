@@ -15,6 +15,7 @@ sub InternalTimer {} sub RemoveInternalTimer {} sub Log3 {}
 sub gettimeofday { $NOW } sub FmtDateTime { "ts" } sub IsDisabled { 0 }
 sub devspec2array { qw(MAX_A MAX_B MAX_K) }
 sub AnalyzeCommandChain { push @CMDS, $_[1]; return undef }
+sub CommandDeleteReading { my ($cl,$a)=@_; my ($d,$r)=split(/ /,$a); delete $R{$d}{$r} }
 require "./FHEM/98_HeatManager.pm";
 
 my ($ok, $fail) = (0, 0);
@@ -91,6 +92,67 @@ check(!@CMDS && $R{hm}{standby_info} =~ /Mindestzeit/, "nach 10 min kein Wechsel
 check(!@CMDS, "2.5 % (zwischen den Schwellen) -> bleibt Standby");
 HeatManager_Standby($h, 3.5);
 check(grep({ /C12.Anlagenmodus_HK2 Timer/ } @CMDS), "3.5 % -> Timer");
+
+# 9) Ofen: brennt -> Raum auf 17 (vorher auto), Raum fuer Heizkurve ausgenommen, aus -> zurueck
+$attr{hm}{hmRules} = "curve,ofen"; $attr{hm}{hmSimulate} = 0; @CMDS = ();
+$attr{hm}{hmOvenRooms} = "MAX_A";
+$R{MAX_A} = { desiredTemperature => 20, valveposition => 30, mode => "auto" };
+$R{MAX_B} = { desiredTemperature => 20, valveposition => 10 };
+$R{MQTT2_MAX6675_01}{Temperatur} = "80.5"; $R{XMI_158d00045d0119}{temperature} = 30;
+$NOW += 300; HeatManager_Sample($h);
+check($R{hm}{oven_state} eq "brennt", "Ofen 80 C -> brennt");
+check(grep({ $_ eq "set MAX_A desiredTemperature 17" } @CMDS), "Ofen: MAX_A auf 17");
+check(($R{hm}{oven_prev_MAX_A} // "") eq "auto", "Ofen: vorher auto gemerkt");
+check(!exists $h->{helper}{samples}[-1]{valve}{MAX_A}, "Ofen: MAX_A nicht in Heizkurve");
+@CMDS = (); $R{MAX_A}{desiredTemperature} = 17; $NOW += 300; HeatManager_Sample($h);
+check(!@CMDS, "Ofen: kein zweites Absenken");
+$R{MQTT2_MAX6675_01}{Temperatur} = 40; $R{XMI_158d00045d0119}{temperature} = 40;
+$NOW += 300; HeatManager_Sample($h);
+check($R{hm}{oven_state} eq "speichert", "Einsatz 40, Kacheln 40 -> speichert");
+$R{XMI_158d00045d0119}{temperature} = 34; $NOW += 300; HeatManager_Sample($h);
+check($R{hm}{oven_state} eq "speichert", "Kacheln 34 (Hysterese) -> speichert");
+@CMDS = (); $R{XMI_158d00045d0119}{temperature} = 32; $NOW += 300; HeatManager_Sample($h);
+check($R{hm}{oven_state} eq "aus", "Kacheln 32 -> aus");
+check(grep({ $_ eq "set MAX_A desiredTemperature auto" } @CMDS), "Ofen aus: MAX_A zurueck auf auto");
+check(!exists $R{hm}{oven_prev_MAX_A}, "Ofen: Merker geloescht");
+# Nutzer hat waehrenddessen selbst geaendert -> nicht ueberschreiben
+$R{MQTT2_MAX6675_01}{Temperatur} = 80; $R{MAX_A}{desiredTemperature} = 20; $NOW += 300; HeatManager_Sample($h);
+$R{MAX_A}{desiredTemperature} = 22; $R{MQTT2_MAX6675_01}{Temperatur} = 30; $R{XMI_158d00045d0119}{temperature} = 20;
+@CMDS = (); $NOW += 300; HeatManager_Sample($h);
+check(!grep({ /MAX_A desiredTemperature/ } @CMDS), "Ofen aus: Nutzerwert 22 bleibt");
+$attr{hm}{hmOvenRooms} = "none";
+
+# 10) Klima: Ventil 60 min > 50 %, Akku ok, Fenster -> an; Raum warm -> aus
+$defs{d_clima} = { NAME => "d_clima" }; $defs{d_gate} = { NAME => "d_gate" };
+$attr{hm}{hmRules} = "klima"; $attr{hm}{hmClimaRoom} = "MAX_A"; $attr{hm}{hmClimaDevice} = "d_clima";
+$attr{hm}{hmClimaGate} = "d_gate"; $attr{hm}{hmClimaAc} = "ac"; $attr{hm}{hmClimaSocReading} = "bms:soc";
+$attr{hm}{hmClimaTimes} = "00:00-23:59";
+$R{d_clima}{mode} = "auto"; $R{ac}{power} = "Off"; $R{d_gate}{freigabe} = "on"; $R{bms}{soc} = 80;
+$R{SensA}{temperature} = 19.5; $R{MAX_A} = { desiredTemperature => 20, valveposition => 70 };
+$R{hm}{clima_since} = 0; @CMDS = ();
+for (1..11) { $NOW += 300; HeatManager_Sample($h); }
+check(!@CMDS, "Klima: nach 55 min noch kein Start");
+for (1..2) { $NOW += 300; HeatManager_Sample($h); }
+check(grep({ $_ eq "set d_clima autoTemperature 26" } @CMDS), "Klima: nach 60 min an");
+check($R{hm}{clima_starts_today} == 1, "Klima: Start gezaehlt");
+@CMDS = (); $R{SensA}{temperature} = 21; $NOW += 600; HeatManager_Sample($h);
+check(!@CMDS, "Klima: Raum warm, aber Mindestlaufzeit -> laeuft weiter");
+$NOW += 3600; HeatManager_Sample($h);
+check(grep({ $_ eq "set d_clima autoTemperature aus" } @CMDS), "Klima: nach Mindestlauf + Raum warm -> aus");
+@CMDS = (); $R{SensA}{temperature} = 19.5; for (1..6) { $NOW += 300; HeatManager_Sample($h); }
+check(!@CMDS && $R{hm}{clima_info} =~ /Pause/, "Klima: Pause nach Abschalten");
+# Akku leer -> kein Start
+$R{bms}{soc} = 30; $NOW += 3600; for (1..13) { $NOW += 300; HeatManager_Sample($h); }
+check(!@CMDS && $R{hm}{clima_info} =~ /Akku/, "Klima: Akku 30 % -> kein Start");
+$attr{hm}{hmClimaGrid} = 1; $R{Mobil3data}{temperature} = 8; $NOW += 300; HeatManager_Sample($h);
+check(grep({ /autoTemperature 26/ } @CMDS), "Klima: hmClimaGrid 1 und 8 C -> an");
+# Nutzer stellt manuell -> HeatManager gibt ab
+$R{d_clima}{mode} = "manuel"; @CMDS = (); $NOW += 300; HeatManager_Sample($h);
+check($R{hm}{clima_state} eq "aus" && !@CMDS, "Klima: Nutzer manuell -> HeatManager gibt ab, kein Befehl");
+# Zeitfenster
+$R{d_clima}{mode} = "auto"; $attr{hm}{hmClimaTimes} = "00:00-00:01"; $R{hm}{clima_starts_today} = 0;
+$NOW += 7200; HeatManager_Sample($h);
+check($R{hm}{clima_info} =~ /Zeitfenster/, "Klima: ausserhalb Zeitfenster kein Start");
 
 print "\n$ok ok, $fail Fehler\n";
 exit($fail ? 1 : 0);
