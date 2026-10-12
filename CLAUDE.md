@@ -14,6 +14,9 @@ FHEM-Modul `FHEM/98_HeatManager.pm` zur Heizungsoptimierung. Zuständig: Session
   echo "UPD ${DATE} ${SIZE} FHEM/98_HeatManager.pm" > controls_HeatManager.txt
   ```
 - Vor jedem Commit: `perl t/test_heatmanager.pl` (muss 0 Fehler melden).
+- GitHub Actions: `test.yml` (Syntax, keine github.com-URL, Funktionstests) bei Änderungen
+  an `FHEM/**`/`t/**`; `update-controls.yml` erzeugt `controls_HeatManager.txt` nach jedem
+  Push der .pm neu (Bot-Commit) – vor dem nächsten Push immer auf dem aktuellen `main` aufsetzen.
 - Neue Regeln immer zuerst im Simulationsmodus ausliefern; scharf schalten nur
   nach Freigabe des Nutzers.
 - Installation beim Nutzer: `update add https://raw.githubusercontent.com/ahlers2mi/FHEM-HeatManager/main/controls_HeatManager.txt`,
