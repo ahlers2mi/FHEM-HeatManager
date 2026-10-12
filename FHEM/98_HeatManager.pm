@@ -1,6 +1,6 @@
 ##############################################################################
 # $Id: 98_HeatManager.pm $
-# Version:  v0.2.0
+# Version:  v0.2.1
 #
 # HeatManager - Heizungsoptimierung fuer FHEM
 #
@@ -25,7 +25,7 @@ use strict;
 use warnings;
 use Time::Local;
 
-my $HM_VERSION = "0.2.0";
+my $HM_VERSION = "0.2.1";
 
 my %HM_defaults = (
   hmThermostats      => "type=HeatingThermostat",
@@ -75,6 +75,8 @@ my %HM_defaults = (
   hmClimaMinRun      => 60,
   hmClimaMinOff      => 60,
   hmClimaMaxStarts   => 2,
+  hmGridSensor       => "MQTT2_Wechselrichter1:netzspannung",
+  hmGridMin          => 100,
 );
 
 sub HeatManager_Initialize {
@@ -93,7 +95,7 @@ sub HeatManager_Initialize {
     . "hmOvenSensor hmOvenTileSensor hmOvenBurn hmOvenStore hmOvenTemp hmOvenRooms "
     . "hmClimaRoom hmClimaDevice hmClimaAc hmClimaGate hmClimaAffected hmClimaValve "
     . "hmClimaValveMinutes hmClimaTimes hmClimaSetTemp hmClimaSoc hmClimaSocReading "
-    . "hmClimaGrid:0,1 hmClimaMinOutdoor hmClimaMinRun hmClimaMinOff hmClimaMaxStarts "
+    . "hmClimaGrid:0,1 hmClimaMinOutdoor hmClimaMinRun hmClimaMinOff hmClimaMaxStarts hmGridSensor hmGridMin "
     . $readingFnAttributes;
   return;
 }
@@ -531,6 +533,15 @@ sub HeatManager_InWindow {
   return 0;
 }
 
+# Notfall: kein Netz am Wechselrichter (Netzspannung < hmGridMin) -> Strom sparen,
+# das Klimageraet wird nie gestartet und ein von uns gestarteter Lauf sofort beendet.
+sub HeatManager_Emergency {
+  my ($name) = @_;
+  my $v = HeatManager_SensorVal(HeatManager_A($name, "hmGridSensor"));
+  return 0 if (!defined($v));                 # unbekannt -> kein Notfall annehmen
+  return $v < HeatManager_A($name, "hmGridMin") ? 1 : 0;
+}
+
 sub HeatManager_ClimaEnergyOk {
   my ($name, $margin) = @_;
   my $soc = HeatManager_SensorVal(HeatManager_A($name, "hmClimaSocReading"));
@@ -581,8 +592,11 @@ sub HeatManager_Clima {
   my $smap   = HeatManager_SensorMap($name);
   my $rtemp  = $smap->{$room} ? HeatManager_SensorVal("$smap->{$room}[0]:$smap->{$room}[1]") : undef;
   my $target = AttrVal($room, "desiredTemperature", 20);
+  my $notfall = HeatManager_Emergency($name);
 
   readingsSingleUpdate($hash, "clima_valve_avg", sprintf("%.0f", $avg), 0);
+  readingsSingleUpdate($hash, "notfall", $notfall ? "on" : "off", 1)
+    if (ReadingsVal($name, "notfall", "") ne ($notfall ? "on" : "off"));
 
   if ($state eq "an") {
     if (!$auto) {   # Nutzer hat uebernommen
@@ -593,7 +607,8 @@ sub HeatManager_Clima {
       return;
     }
     my $run = $now - $since;
-    my $why = !$inWin ? "Zeitfenster vorbei"
+    my $why = $notfall ? "Notfall (kein Netz)"
+            : !$inWin ? "Zeitfenster vorbei"
             : !$frei ? "Heizgrenze gesperrt"
             : ($run >= HeatManager_A($name, "hmClimaMinRun") * 60 && !$eok) ? "Energie: $etxt"
             : ($run >= HeatManager_A($name, "hmClimaMinRun") * 60 && defined($rtemp) && $rtemp >= $target + 0.5)
@@ -611,6 +626,7 @@ sub HeatManager_Clima {
 
   # Start pruefen
   my @no;
+  push @no, "Notfall (kein Netz)" if ($notfall);
   push @no, sprintf("Ventil %.0f %%", $avg) if (!$full || $avg < HeatManager_A($name, "hmClimaValve"));
   push @no, "Zeitfenster" if (!$inWin);
   push @no, "Heizgrenze" if (!$frei);
@@ -716,6 +732,8 @@ sub HeatManager_Get {
         <code>hmClimaValveMinutes</code> (60), <code>hmClimaTimes</code> (07:00-20:30), <code>hmClimaSetTemp</code> (26),
         <code>hmClimaSoc</code>/<code>hmClimaSocReading</code> (Akku 60 %), <code>hmClimaGrid</code> (0 = nur Akku),
         <code>hmClimaMinOutdoor</code>, <code>hmClimaMinRun</code>/<code>hmClimaMinOff</code> (60 min), <code>hmClimaMaxStarts</code> (2)</li>
+    <li><b>Notfall</b>: <code>hmGridSensor</code> (MQTT2_Wechselrichter1:netzspannung), <code>hmGridMin</code> (100 V) -
+        liegt kein Netz an, startet das Klimageraet nie, ein laufender Lauf des Moduls wird sofort beendet (Reading <code>notfall</code>)</li>
     <li><code>hmOutdoorSensor</code> - Aussentemperatur (Mobil3data:temperature)</li>
   </ul>
 </ul>

@@ -154,5 +154,19 @@ $R{d_clima}{mode} = "auto"; $attr{hm}{hmClimaTimes} = "00:00-00:01"; $R{hm}{clim
 $NOW += 7200; HeatManager_Sample($h);
 check($R{hm}{clima_info} =~ /Zeitfenster/, "Klima: ausserhalb Zeitfenster kein Start");
 
+# 11) Notfall: kein Netz -> laufende Klima sofort aus, kein Start
+$attr{hm}{hmClimaTimes} = "00:00-23:59"; $attr{hm}{hmGridSensor} = "wr:netzspannung";
+$R{wr}{netzspannung} = "229.5"; $R{bms}{soc} = 90; $R{SensA}{temperature} = 19;
+$R{hm}{clima_state} = "an"; $R{hm}{clima_since} = $NOW; @CMDS = ();
+$R{wr}{netzspannung} = "0"; $NOW += 300; HeatManager_Sample($h);
+check(grep({ $_ eq "set d_clima autoTemperature aus" } @CMDS), "Notfall: laufende Klima sofort aus (vor Mindestlauf)");
+check($R{hm}{notfall} eq "on", "Notfall: Reading notfall on");
+@CMDS = (); $R{hm}{clima_since} = 0; $R{hm}{clima_starts_today} = 0;
+for (1..13) { $NOW += 300; HeatManager_Sample($h); }
+check(!@CMDS && $R{hm}{clima_info} =~ /Notfall/, "Notfall: kein Start trotz Ventil/Akku");
+$R{wr}{netzspannung} = "230"; $NOW += 300; HeatManager_Sample($h);
+check($R{hm}{notfall} eq "off" && grep({ /autoTemperature 26/ } @CMDS), "Netz wieder da: Start moeglich");
+delete $R{wr}{netzspannung}; $R{hm}{clima_state} = "aus";
+
 print "\n$ok ok, $fail Fehler\n";
 exit($fail ? 1 : 0);
