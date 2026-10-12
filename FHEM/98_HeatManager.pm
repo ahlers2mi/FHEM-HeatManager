@@ -30,6 +30,12 @@
 #     mitbeheizten Räume zurück. Danach wird der vorherige Zustand
 #     wiederhergestellt – aber nur, wenn niemand inzwischen selbst etwas
 #     eingestellt hat.
+#   * sonne: ist morgens für den Tag viel PV angesagt (= Sonne durch die
+#     Fenster) und mittags nicht zu kalt, wird die Heizkurve für das
+#     Sonnenfenster eine Stufe abgesenkt und danach zurückgestellt.
+#   * saison: Heizbeginn/-ende nach DWD-Prognose: mehrere Tage kühl -> alle
+#     Thermostate auf auto (Wochenplan), mehrere Tage warm -> auf off (manual),
+#     wie im Sommer von Hand üblich (schont die Batterien der Thermostate).
 #
 # Standard ist der Simulationsmodus (hmSimulate 1): das Modul misst, rechnet
 # und schreibt in Readings (sim_<regel>, last_action), was es tun würde, schaltet
@@ -39,7 +45,7 @@
 # keine eigene Hardware.
 #
 # Autor:    ahlers2mi
-# Version:  v0.3.0
+# Version:  v0.4.0
 # Lizenz:   GPL v2 oder höher (wie FHEM)
 ##############################################################################
 
@@ -53,14 +59,14 @@ use JSON::PP;
 # Von fhem.pl bereitgestellte Globals.
 use vars qw($init_done %defs %attr $readingFnAttributes);
 
-my $HM_VERSION = "0.3.0";
+my $HM_VERSION = "0.4.0";
 
 # Voreinstellungen aller Attribute. Sie passen zur Anlage des Autors und lassen
 # sich einzeln per attr überschreiben; HeatManager_A liest Attribut oder Default.
 my %HM_defaults = (
     # --- allgemein ---
     hmSimulate          => 1,                                   # 1 = nur rechnen und protokollieren
-    hmRules             => "curve,standby,klima,ofen",          # aktive Regeln
+    hmRules             => "curve,standby,klima,ofen,sonne,saison", # aktive Regeln
     hmSampleInterval    => 300,                                 # Messintervall in s (min. 60)
     hmNotifyCmd         => "",                                  # FHEM-Befehl für Meldungen, $MSG wird ersetzt
     hmOutdoorSensor     => "Mobil3data:temperature",            # Außentemperatur
@@ -117,6 +123,19 @@ my %HM_defaults = (
     hmGridMin           => 100,                                 # V darunter = Notfall
     hmEmergencyReading  => "d_solar:index",                     # Solarindex der vorhandenen Logik
     hmEmergencyBelow    => -40,                                 # <= Wert = Notfall (n_d_solar_index)
+    # --- Regel sonne ---
+    hmSunForecast       => "Forecast",                          # SolarForecast-Gerät (Today_HourHH_PVforecast)
+    hmSunWindow         => "09:00-15:00",                       # Sonnenfenster
+    hmSunCheckTime      => "06:00",                             # ab dann Tagesplan erstellen
+    hmSunPV             => 8000,                                # Wh PV im Fenster für "sonnig"
+    hmSunTempReading    => "rem_DWD:fc0_12_TTT",                # Prognose 12 Uhr
+    hmSunMinTemp        => 3,                                   # darunter keine Absenkung
+    hmSunStep           => 1,                                   # Stufen Absenkung
+    # --- Regel saison ---
+    hmSeasonForecast    => "rem_DWD",                           # DWD-Gerät (fc0_Tx/Tn, fc1_Tx/Tn)
+    hmSeasonOn          => 12,                                  # Prognose-Tagesmittel darunter -> heizen
+    hmSeasonOff         => 16,                                  # darüber -> Sommer
+    hmSeasonDays        => 3,                                   # so viele Tage in Folge
 );
 
 # ----------------------------------------------------------------------------
@@ -135,7 +154,7 @@ sub HeatManager_Initialize {
     $hash->{AttrList} =
           "disable:0,1 "
         . "hmSimulate:1,0 "
-        . "hmRules:multiple-strict,curve,standby,klima,ofen "
+        . "hmRules:multiple-strict,curve,standby,klima,ofen,sonne,saison "
         . "hmSampleInterval hmNotifyCmd:textField-long hmOutdoorSensor "
         # --- Thermostate / Räume ---
         . "hmThermostats hmIgnore hmRoomSensors:textField-long "
@@ -154,6 +173,10 @@ sub HeatManager_Initialize {
         . "hmClimaGrid:0,1 hmClimaMinOutdoor hmClimaMinRun hmClimaMinOff hmClimaMaxStarts "
         # --- Notfall ---
         . "hmGridSensor hmGridMin hmEmergencyReading hmEmergencyBelow "
+        # --- sonne ---
+        . "hmSunForecast hmSunWindow hmSunCheckTime hmSunPV hmSunTempReading hmSunMinTemp hmSunStep "
+        # --- saison ---
+        . "hmSeasonForecast hmSeasonOn hmSeasonOff hmSeasonDays "
         . $readingFnAttributes;
     return undef;
 }
@@ -221,10 +244,13 @@ sub HeatManager_Attr {
     my ($cmd, $name, $attr, $val) = @_;
     my $hash = $defs{$name};
 
-    if ($cmd eq "set" && $attr eq "hmCheckTime") {
-        return "hmCheckTime: HH:MM erwartet" if ($val !~ /^\d\d:\d\d$/);
+    if ($cmd eq "set" && $attr =~ /^hm(CheckTime|SunCheckTime)$/) {
+        return "$attr: HH:MM erwartet" if ($val !~ /^\d\d:\d\d$/);
     }
-    if ($cmd eq "set" && $attr =~ /^hm(FineMin|FineMax|SampleInterval|ValveLow|ValveHigh|ColdDelta|ColdMinutes|RampIgnore|MinSamplesPct|StandbyLow|StandbyHigh|StandbyMinTime|OvenBurn|OvenStore|OvenTemp|ClimaValve|ClimaValveMinutes|ClimaSetTemp|ClimaSoc|ClimaMinOutdoor|ClimaMinRun|ClimaMinOff|ClimaMaxStarts|GridMin|EmergencyBelow)$/) {
+    if ($cmd eq "set" && $attr =~ /^hm(SunWindow|ClimaTimes)$/) {
+        return "$attr: HH:MM-HH:MM erwartet" if ($val !~ /^\d\d:\d\d-\d\d:\d\d(,\d\d:\d\d-\d\d:\d\d)*$/);
+    }
+    if ($cmd eq "set" && $attr =~ /^hm(FineMin|FineMax|SampleInterval|ValveLow|ValveHigh|ColdDelta|ColdMinutes|RampIgnore|MinSamplesPct|StandbyLow|StandbyHigh|StandbyMinTime|OvenBurn|OvenStore|OvenTemp|ClimaValve|ClimaValveMinutes|ClimaSetTemp|ClimaSoc|ClimaMinOutdoor|ClimaMinRun|ClimaMinOff|ClimaMaxStarts|GridMin|EmergencyBelow|SunPV|SunMinTemp|SunStep|SeasonOn|SeasonOff|SeasonDays)$/) {
         return "$attr: Zahl erwartet" if ($val !~ /^-?\d+(\.\d+)?$/);
     }
     if ($attr eq "hmCheckTime" && $init_done && $hash) {
@@ -402,6 +428,7 @@ sub HeatManager_Sample {
     readingsEndUpdate($hash, 1);
 
     # 3. laufende Regeln
+    HeatManager_SunTick($hash)       if (HeatManager_RuleOn($name, "sonne"));
     HeatManager_Standby($hash, $avg) if (HeatManager_RuleOn($name, "standby"));
     HeatManager_Clima($hash, $hash->{helper}{valveNow}{HeatManager_A($name, "hmClimaRoom")})
         if (HeatManager_RuleOn($name, "klima"));
@@ -484,7 +511,9 @@ sub HeatManager_CheckTimer {
     my $hash = $defs{$name};
     return undef if (!$hash);
     HeatManager_ScheduleCheck($hash);
-    HeatManager_Curve($hash) if (!IsDisabled($name) && HeatManager_RuleOn($name, "curve"));
+    return undef if (IsDisabled($name));
+    HeatManager_Curve($hash)  if (HeatManager_RuleOn($name, "curve"));
+    HeatManager_Season($hash) if (HeatManager_RuleOn($name, "saison"));
     return undef;
 }
 
@@ -845,6 +874,170 @@ sub HeatManager_Clima {
     return undef;
 }
 
+
+# ============================================================================
+# Regel sonne
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# HeatManager_SunPlan
+#   Morgens (hmSunCheckTime): ist für das Sonnenfenster (hmSunWindow) viel PV
+#   angesagt (Summe der stündlichen PV-Prognose aus hmSunForecast) und mittags
+#   nicht zu kalt (hmSunTempReading, DWD-Prognose 12 Uhr), wird die Heizkurve
+#   für dieses Fenster um hmSunStep abgesenkt. Sonne durch die Fenster heizt
+#   dann mit, Gas soll nicht gleichzeitig nachlegen. Am Fensterende wird der
+#   Ausgangswert (sun_base) wiederhergestellt.
+#   Die Prognose zählt Stunden als Today_Hour<HH>_PVforecast; Hour10 ist die
+#   Stunde 09:00-10:00.
+# ----------------------------------------------------------------------------
+sub HeatManager_SunPlan {
+    my ($hash) = @_;
+    my $name = $hash->{NAME};
+    my ($from, $to) = split(/-/, HeatManager_A($name, "hmSunWindow"));
+    my ($fh) = split(/:/, $from);
+    my ($th) = split(/:/, $to);
+    my $fc   = HeatManager_A($name, "hmSunForecast");
+    my $pv   = 0;
+    my $have = 0;
+    for my $hh ($fh + 1 .. $th) {
+        my $v = HeatManager_SensorVal(sprintf("%s:Today_Hour%02d_PVforecast", $fc, $hh));
+        next if (!defined($v));
+        $pv += $v; $have++;
+    }
+    my $temp = HeatManager_SensorVal(HeatManager_A($name, "hmSunTempReading"));
+    my $minPV = HeatManager_A($name, "hmSunPV");
+    my $ok = $have && $pv >= $minPV
+          && (!defined($temp) || $temp >= HeatManager_A($name, "hmSunMinTemp"));
+    my $info = sprintf("PV %s-%s %.1f kWh (Schwelle %.1f), Mittag %s C",
+                       $from, $to, $pv / 1000, $minPV / 1000, $temp // "?");
+    readingsBeginUpdate($hash);
+    readingsBulkUpdate($hash, "sun_forecast", $info);
+    readingsBulkUpdate($hash, "sun_planned",  $ok ? "ja" : "nein");
+    readingsEndUpdate($hash, 1);
+    return $ok;
+}
+
+# ----------------------------------------------------------------------------
+# HeatManager_SunTick
+#   Bei jeder Messung: im Sonnenfenster und bei geplanter Sonne absenken,
+#   außerhalb (oder wenn der Plan entfällt) den Ausgangswert zurückgeben.
+#   Der Morgenplan wird einmal pro Tag ab hmSunCheckTime erstellt.
+# ----------------------------------------------------------------------------
+sub HeatManager_SunTick {
+    my ($hash) = @_;
+    my $name   = $hash->{NAME};
+    my $heater = HeatManager_A($name, "hmHeater");
+    my $rd     = HeatManager_A($name, "hmFineReading");
+    my @lt     = localtime(time());
+    my $day    = sprintf("%04d-%02d-%02d", $lt[5] + 1900, $lt[4] + 1, $lt[3]);
+    my $hm     = sprintf("%02d:%02d", $lt[2], $lt[1]);
+
+    if (ReadingsVal($name, "sun_day", "") ne $day && $hm ge HeatManager_A($name, "hmSunCheckTime")) {
+        readingsSingleUpdate($hash, "sun_day", $day, 0);
+        HeatManager_SunPlan($hash);
+    }
+    my $active  = ReadingsVal($name, "sun_active", "off") eq "on";
+    my $want    = ReadingsVal($name, "sun_day", "") eq $day
+               && ReadingsVal($name, "sun_planned", "nein") eq "ja"
+               && HeatManager_InWindow(HeatManager_A($name, "hmSunWindow"));
+    my $cur     = ReadingsVal($heater, $rd, undef);
+    return undef if (!defined($cur) || $cur !~ /^-?\d+$/);
+
+    if ($want && !$active) {
+        my $t = $cur - HeatManager_A($name, "hmSunStep");
+        my $mn = HeatManager_A($name, "hmFineMin");
+        $t = $mn if ($t < $mn);
+        readingsBeginUpdate($hash);
+        readingsBulkUpdate($hash, "sun_active", "on");
+        readingsBulkUpdate($hash, "sun_base",   $cur);
+        readingsEndUpdate($hash, 1);
+        return undef if ($t == $cur);
+        HeatManager_Do($hash, "set $heater $rd $t", "sonne", "Sonne erwartet: $rd $cur -> $t");
+        HeatManager_VerifyLater($hash, $heater, $rd, $t, 1) if (!HeatManager_A($name, "hmSimulate"));
+    } elsif (!$want && $active) {
+        my $base = ReadingsVal($name, "sun_base", $cur);
+        readingsSingleUpdate($hash, "sun_active", "off", 1);
+        return undef if ($base == $cur && !HeatManager_A($name, "hmSimulate"));
+        HeatManager_Do($hash, "set $heater $rd $base", "sonne", "Sonnenfenster vorbei: $rd zurueck auf $base");
+        HeatManager_VerifyLater($hash, $heater, $rd, $base, 1) if (!HeatManager_A($name, "hmSimulate"));
+    }
+    return undef;
+}
+
+# ============================================================================
+# Regel saison
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# HeatManager_Season
+#   Einmal täglich (bei der Tagesauswertung): Heizbeginn, wenn das Mittel aus
+#   Höchst- und Tiefstwert der Prognose (hmSeasonForecast, DWD fc0/fc1) an
+#   hmSeasonDays Tagen in Folge unter hmSeasonOn liegt -> alle Thermostate auf
+#   auto (Wochenplan greift). Heizende, wenn es hmSeasonDays Tage in Folge über
+#   hmSeasonOff liegt -> alle Thermostate auf off (manual), wie der Autor es im
+#   Sommer von Hand macht (spart Batterie der Thermostate).
+#   Ausgangszustand: Mehrheit der Thermostate auf auto = Heizsaison.
+# ----------------------------------------------------------------------------
+sub HeatManager_Season {
+    my ($hash) = @_;
+    my $name = $hash->{NAME};
+    my @th   = devspec2array(HeatManager_A($name, "hmThermostats"));
+    return undef if (!@th);
+    my $auto = grep { ReadingsVal($_, "mode", "") eq "auto" } @th;
+    my $cur  = ReadingsVal($name, "season", $auto * 2 >= @th ? "heizen" : "sommer");
+
+    # Tagesmittel der Prognose für heute und morgen
+    my $dev = HeatManager_A($name, "hmSeasonForecast");
+    my @m;
+    for my $d (0, 1) {
+        my $tx = HeatManager_SensorVal("$dev:fc${d}_Tx");
+        my $tn = HeatManager_SensorVal("$dev:fc${d}_Tn");
+        push @m, ($tx + $tn) / 2 if (defined($tx) && defined($tn));
+    }
+    return undef if (!@m);
+    my $mean = $m[0];
+    my ($on, $off) = (HeatManager_A($name, "hmSeasonOn"), HeatManager_A($name, "hmSeasonOff"));
+    my $cnt = ReadingsVal($name, "season_count", 0);
+
+    if ($cur eq "sommer") {
+        $cnt = ($mean < $on) ? $cnt + 1 : 0;
+    } else {
+        $cnt = ($mean > $off) ? $cnt + 1 : 0;
+    }
+    my $info = sprintf("%s, Prognose-Mittel %.1f C, %d/%d Tage", $cur, $mean, $cnt, HeatManager_A($name, "hmSeasonDays"));
+    readingsBeginUpdate($hash);
+    readingsBulkUpdate($hash, "season",       $cur);
+    readingsBulkUpdate($hash, "season_count", $cnt);
+    readingsBulkUpdate($hash, "season_info",  $info);
+    readingsEndUpdate($hash, 1);
+    return undef if ($cnt < HeatManager_A($name, "hmSeasonDays"));
+
+    my $new = $cur eq "sommer" ? "heizen" : "sommer";
+    my $val = $new eq "heizen" ? "auto" : "off";
+    readingsBeginUpdate($hash);
+    readingsBulkUpdate($hash, "season",       $new);
+    readingsBulkUpdate($hash, "season_count", 0);
+    readingsBulkUpdate($hash, "season_info",  "Wechsel nach $new (Prognose-Mittel " . sprintf("%.1f", $mean) . " C)");
+    readingsEndUpdate($hash, 1);
+    # nacheinander mit Abstand, damit der MAX-Funkstick nicht überlastet
+    my $i = 0;
+    foreach my $t (@th) {
+        my $cmd = "set $t desiredTemperature $val";
+        if ($i == 0) {
+            HeatManager_Do($hash, $cmd, "saison", "Heizsaison: $new (Thermostate $val)");
+        } else {
+            my $delay = 20 * $i;
+            if (HeatManager_A($name, "hmSimulate")) {
+                HeatManager_Do($hash, $cmd, "saison");
+            } else {
+                InternalTimer(gettimeofday() + $delay, sub { HeatManager_Do($hash, $cmd, "saison") }, "season:$name:$t", 0);
+            }
+        }
+        $i++;
+    }
+    return undef;
+}
+
 # ============================================================================
 # Schalten, Prüfen, Melden
 # ============================================================================
@@ -955,6 +1148,9 @@ sub HeatManager_Get {
             . ", Kacheln " . ReadingsVal($name, "oven_tiles", "?") . ")",
         "Klima:            " . ReadingsVal($name, "clima_state", "aus") . " - " . ReadingsVal($name, "clima_info", "-"),
         "Notfall:          " . ReadingsVal($name, "notfall", "off"),
+        "Sonne:            " . ReadingsVal($name, "sun_planned", "-") . " - " . ReadingsVal($name, "sun_forecast", "-")
+            . (ReadingsVal($name, "sun_active", "off") eq "on" ? " (aktiv)" : ""),
+        "Saison:           " . ReadingsVal($name, "season_info", "-"),
         "Ausgenommen:      " . ReadingsVal($name, "excluded_rooms", "none"));
 }
 
@@ -962,8 +1158,8 @@ sub HeatManager_Get {
 
 =pod
 =item device
-=item summary    Heizungsoptimierung: Heizkurve, Standby, Klima und Kachelofen
-=item summary_DE Heizungsoptimierung: Heizkurve, Standby, Klima und Kachelofen
+=item summary    Heizungsoptimierung: Heizkurve, Standby, Klima, Kachelofen, Sonne, Saison
+=item summary_DE Heizungsoptimierung: Heizkurve, Standby, Klima, Kachelofen, Sonne, Saison
 =begin html
 
 <a id="HeatManager"></a>
@@ -972,8 +1168,9 @@ sub HeatManager_Get {
   Optimiert eine Gasheizung mit Heizkörperthermostaten: passt die Heizkurve
   täglich an die Ventilstellungen an, schaltet den Heizkreis bei geschlossenen
   Ventilen in Standby, lässt ein Klimagerät einen Raum mit dauerhaft offenem
-  Ventil stützen und nimmt die Thermostate zurück, solange ein Kachelofen
-  heizt. Standard ist die <b>Simulation</b>: es wird nur gerechnet und
+  Ventil stützen, nimmt die Thermostate zurück, solange ein Kachelofen heizt,
+  senkt an sonnigen Tagen die Kurve im Sonnenfenster ab und schaltet Heizbeginn
+  und -ende nach Wetterprognose. Standard ist die <b>Simulation</b>: es wird nur gerechnet und
   protokolliert (<code>sim_&lt;regel&gt;</code>, <code>last_action</code>).
   <br><br>
 
@@ -1015,6 +1212,10 @@ sub HeatManager_Get {
         <b>hmClimaSoc</b>/<b>hmClimaSocReading</b> (60 %), <b>hmClimaGrid</b> (0 = nur Akku), <b>hmClimaMinOutdoor</b> (3),
         <b>hmClimaMinRun</b>/<b>hmClimaMinOff</b> (60 min), <b>hmClimaMaxStarts</b> (2) &ndash; Regel klima</li>
     <li><a id="HeatManager-attr-hmGridSensor"></a><b>hmGridSensor</b>/<b>hmGridMin</b> (100 V), <b>hmEmergencyReading</b>/<b>hmEmergencyBelow</b> (d_solar:index, -40) &ndash; Notfall: kein Netz am Wechselrichter; die Klima startet nie, ein laufender Lauf des Moduls endet sofort (Reading <code>notfall</code>)</li>
+    <li><b>hmSunForecast</b> (Forecast), <b>hmSunWindow</b> (09:00-15:00), <b>hmSunCheckTime</b> (06:00), <b>hmSunPV</b> (8000 Wh),
+        <b>hmSunTempReading</b> (rem_DWD:fc0_12_TTT), <b>hmSunMinTemp</b> (3), <b>hmSunStep</b> (1) &ndash; Regel sonne</li>
+    <li><b>hmSeasonForecast</b> (rem_DWD), <b>hmSeasonOn</b> (12), <b>hmSeasonOff</b> (16), <b>hmSeasonDays</b> (3) &ndash; Regel saison:
+        Thermostate auf <code>auto</code> bzw. <code>off</code></li>
     <li><b>hmOutdoorSensor</b> &ndash; Außentemperatur; <b>hmSampleInterval</b> (300 s); <b>hmNotifyCmd</b> &ndash; Meldungsbefehl, <code>$MSG</code> wird ersetzt; <b>disable</b></li>
   </ul><br>
 
@@ -1026,6 +1227,7 @@ sub HeatManager_Get {
     <li><b>standby_target</b>, <b>standby_since</b>, <b>standby_info</b></li>
     <li><b>oven_state</b> (aus|brennt|speichert), <b>oven_insert</b>, <b>oven_tiles</b>, <b>oven_since</b>, <b>oven_prev_&lt;thermostat&gt;</b></li>
     <li><b>clima_state</b>, <b>clima_info</b>, <b>clima_valve_avg</b>, <b>clima_starts_today</b>, <b>notfall</b></li>
+    <li><b>sun_forecast</b>, <b>sun_planned</b>, <b>sun_active</b>, <b>sun_base</b>, <b>season</b>, <b>season_count</b>, <b>season_info</b></li>
     <li><b>last_action</b>, <b>sim_&lt;regel&gt;</b>; versteckt <b>.samples</b> (Messwerte für den Neustart)</li>
   </ul>
 </ul>
