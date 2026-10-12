@@ -16,6 +16,8 @@ FHEM-Modul `FHEM/98_HeatManager.pm` zur Heizungsoptimierung. Zuständig: Session
 - Vor jedem Commit: `perl t/test_heatmanager.pl` (muss 0 Fehler melden).
 - Neue Regeln immer zuerst im Simulationsmodus ausliefern; scharf schalten nur
   nach Freigabe des Nutzers.
+- Installation beim Nutzer: `update add https://raw.githubusercontent.com/ahlers2mi/FHEM-HeatManager/main/controls_HeatManager.txt`,
+  dann `update all` und `reload 98_HeatManager` (nach jedem Update reload).
 - Keine github.com-URL in der .pm (Anon-Spiegel-Problem wie beim FHEM-MCP).
 - Repo ist öffentlich: keine Tokens, Passwörter, IPs mit Zugangsdaten.
 

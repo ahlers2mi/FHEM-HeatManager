@@ -20,12 +20,16 @@ Raumsensoren, PV-Inselanlage, Klimagerät, Kachelofen.
 ## Installation
 
 ```
-update all https://raw.githubusercontent.com/ahlers2mi/FHEM-HeatManager/main/controls_HeatManager.txt
+update add https://raw.githubusercontent.com/ahlers2mi/FHEM-HeatManager/main/controls_HeatManager.txt
+update all
 reload 98_HeatManager
 define heizung HeatManager
 attr heizung hmRoomSensors MAX_040549:Mobil5data MAX_0404d9:Mobil1data MAX_06e2ff:Mobil6data
 attr heizung hmIgnore MAX_0423d1
 ```
+
+Durch `update add` ist das Repo bei jedem künftigen `update all` dabei; nach einem
+Update jeweils `reload 98_HeatManager`.
 
 Das Modul startet im **Simulationsmodus** (`hmSimulate 1`): es sammelt Messwerte,
 rechnet und schreibt, was es tun würde (`sim_curve`, `sim_standby`,
