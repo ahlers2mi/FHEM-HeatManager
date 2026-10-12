@@ -1,0 +1,28 @@
+name: Test
+
+on:
+  push:
+    paths:
+      - 'FHEM/**'
+      - 't/**'
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Perl-Syntax
+        run: |
+          perl -e 'use strict; use warnings;
+            use vars qw($readingFnAttributes $init_done %defs %attr);
+            require "./FHEM/98_HeatManager.pm"; print "syntax ok\n";'
+
+      - name: Keine github.com-URL im Modul
+        run: |
+          ! grep -n "github.com" FHEM/98_HeatManager.pm
+
+      - name: Funktionstests
+        run: perl t/test_heatmanager.pl
