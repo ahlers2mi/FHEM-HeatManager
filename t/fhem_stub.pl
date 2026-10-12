@@ -83,6 +83,9 @@ sub ok {
 }
 
 sub done {
+    # Laufzeitfehler in Timer-Funktionen fängt HeatManager_Safe ab und schreibt
+    # sie ins Reading error - hier dürfen keine auftreten.
+    ok(rd("error") eq "", "kein Laufzeitfehler" . (rd("error") ne "" ? ": " . rd("error") : ""));
     printf("\n%d ok, %d FAILED\n", $OKS, $FAILS);
     exit($FAILS ? 1 : 0);
 }

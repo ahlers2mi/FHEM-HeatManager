@@ -45,7 +45,7 @@
 # keine eigene Hardware.
 #
 # Autor:    ahlers2mi
-# Version:  v0.4.0
+# Version:  v0.4.1
 # Lizenz:   GPL v2 oder höher (wie FHEM)
 ##############################################################################
 
@@ -53,13 +53,15 @@ package main;
 
 use strict;
 use warnings;
-use Time::Local;
-use JSON::PP;
+# Nichts in den Namensraum main importieren: andere Module nutzen dort ihr
+# eigenes encode_json/decode_json (JSON::XS) bzw. timelocal.
+use Time::Local ();
+use JSON::PP ();
 
 # Von fhem.pl bereitgestellte Globals.
 use vars qw($init_done %defs %attr $readingFnAttributes);
 
-my $HM_VERSION = "0.4.0";
+my $HM_VERSION = "0.4.1";
 
 # Voreinstellungen aller Attribute. Sie passen zur Anlage des Autors und lassen
 # sich einzeln per attr überschreiben; HeatManager_A liest Attribut oder Default.
@@ -218,7 +220,7 @@ sub HeatManager_Define {
 
     readingsSingleUpdate($hash, "state", "initialized", 1);
     RemoveInternalTimer($hash);
-    InternalTimer(gettimeofday() + 3,  "HeatManager_restoreState", $hash, 0);
+    InternalTimer(gettimeofday() + 3,  sub { HeatManager_Safe($hash, "Restore", \&HeatManager_restoreState) }, $hash, 0);
     InternalTimer(gettimeofday() + 30, "HeatManager_Sample",       $hash, 0);
     HeatManager_ScheduleCheck($hash);
     return undef;
@@ -276,7 +278,7 @@ sub HeatManager_restoreState {
 
     my $json = ReadingsVal($name, ".samples", "");
     return undef if ($json eq "");
-    my $s = eval { decode_json($json) };
+    my $s = eval { JSON::PP->new->decode($json) };
     if (ref($s) ne "ARRAY") {
         Log3($name, 2, "HeatManager $name: .samples nicht lesbar, beginne neu");
         return undef;
@@ -298,7 +300,7 @@ sub HeatManager_saveState {
     my $now = time();
     return undef if ($now - ($hash->{helper}{lastSave} // 0) < 3600);
     $hash->{helper}{lastSave} = $now;
-    readingsSingleUpdate($hash, ".samples", encode_json($hash->{helper}{samples}), 0);
+    readingsSingleUpdate($hash, ".samples", JSON::PP->new->canonical->encode($hash->{helper}{samples}), 0);
     return undef;
 }
 
@@ -363,6 +365,36 @@ sub HeatManager_Sample {
     $iv = 60 if ($iv < 60);
     InternalTimer(gettimeofday() + $iv, "HeatManager_Sample", $hash, 0);   # nächste Messung
     return undef if (IsDisabled($name));
+    HeatManager_Safe($hash, "Messung", \&HeatManager_SampleRun);
+    return undef;
+}
+
+# ----------------------------------------------------------------------------
+# HeatManager_Safe
+#   Führt eine Timer-Funktion in eval aus. Ein die() in einem InternalTimer-
+#   Callback würde sonst FHEM beenden. Fehler landen im Log und im Reading
+#   error, das Modul läuft beim nächsten Timer weiter.
+# ----------------------------------------------------------------------------
+sub HeatManager_Safe {
+    my ($hash, $what, $fn, @args) = @_;
+    my $name = $hash->{NAME};
+    my $ok = eval { $fn->($hash, @args); 1 };
+    if (!$ok) {
+        my $err = $@ // "unbekannt";
+        $err =~ s/\s+$//;
+        Log3($name, 1, "HeatManager $name: Fehler in $what: $err");
+        readingsSingleUpdate($hash, "error", "$what: $err", 1);
+    }
+    return undef;
+}
+
+# ----------------------------------------------------------------------------
+# HeatManager_SampleRun
+#   Eigentliche Messung (siehe HeatManager_Sample).
+# ----------------------------------------------------------------------------
+sub HeatManager_SampleRun {
+    my ($hash) = @_;
+    my $name = $hash->{NAME};
     HeatManager_restoreState($hash);       # falls der Timer dafür noch nicht lief
 
     my $now  = time();
@@ -493,7 +525,7 @@ sub HeatManager_ScheduleCheck {
     $time //= HeatManager_A($name, "hmCheckTime");
     my ($h, $m) = split(/:/, $time);
     my @lt   = localtime(time());
-    my $next = timelocal(0, $m, $h, $lt[3], $lt[4], $lt[5]);
+    my $next = Time::Local::timelocal(0, $m, $h, $lt[3], $lt[4], $lt[5]);
     $next += 86400 if ($next <= time() + 5);
     RemoveInternalTimer("check:$name");
     InternalTimer($next, "HeatManager_CheckTimer", "check:$name", 0);
@@ -512,8 +544,8 @@ sub HeatManager_CheckTimer {
     return undef if (!$hash);
     HeatManager_ScheduleCheck($hash);
     return undef if (IsDisabled($name));
-    HeatManager_Curve($hash)  if (HeatManager_RuleOn($name, "curve"));
-    HeatManager_Season($hash) if (HeatManager_RuleOn($name, "saison"));
+    HeatManager_Safe($hash, "Heizkurve", \&HeatManager_Curve) if (HeatManager_RuleOn($name, "curve"));
+    HeatManager_Safe($hash, "Saison",    \&HeatManager_Season) if (HeatManager_RuleOn($name, "saison"));
     return undef;
 }
 
@@ -1030,7 +1062,7 @@ sub HeatManager_Season {
             if (HeatManager_A($name, "hmSimulate")) {
                 HeatManager_Do($hash, $cmd, "saison");
             } else {
-                InternalTimer(gettimeofday() + $delay, sub { HeatManager_Do($hash, $cmd, "saison") }, "season:$name:$t", 0);
+                InternalTimer(gettimeofday() + $delay, sub { HeatManager_Safe($hash, "Saison", sub { HeatManager_Do($hash, $cmd, "saison") }) }, "season:$name:$t", 0);
             }
         }
         $i++;
@@ -1075,7 +1107,7 @@ sub HeatManager_VerifyLater {
     my ($hash, $heater, $rd, $target, $try) = @_;
     my $name = $hash->{NAME};
     RemoveInternalTimer("verify:$name");
-    InternalTimer(gettimeofday() + 180, sub {
+    InternalTimer(gettimeofday() + 180, sub { HeatManager_Safe($hash, "Pruefung", sub {
         my $v = ReadingsVal($heater, $rd, "");
         if ($v eq $target) {
             readingsSingleUpdate($hash, "verify", "ok ($rd=$target)", 1);
@@ -1090,7 +1122,7 @@ sub HeatManager_VerifyLater {
         AnalyzeCommandChain(undef, "set $heater $rd $target")
             if (ReadingsVal($heater, "HumanAccess", "none") eq "none");
         HeatManager_VerifyLater($hash, $heater, $rd, $target, $try + 1);
-    }, "verify:$name", 0);
+    }) }, "verify:$name", 0);
     return undef;
 }
 
