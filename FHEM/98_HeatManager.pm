@@ -39,13 +39,15 @@
 #
 # Standard ist der Simulationsmodus (hmSimulate 1): das Modul misst, rechnet
 # und schreibt in Readings (sim_<regel>, last_action), was es tun würde, schaltet
-# aber nichts. Geschaltet wird ausschließlich über HeatManager_Do.
+# aber nichts. Regeln in hmLive schalten trotzdem echt - so lassen sich die
+# Regeln einzeln scharf schalten. Geschaltet wird ausschließlich über
+# HeatManager_Do.
 #
 # Das Modul steuert nur über konfigurierbare Fremdgeräte (Attribute) und hält
 # keine eigene Hardware.
 #
 # Autor:    ahlers2mi
-# Version:  v0.5.0
+# Version:  v0.6.0
 # Lizenz:   GPL v2 oder höher (wie FHEM)
 ##############################################################################
 
@@ -61,7 +63,7 @@ use JSON::PP ();
 # Von fhem.pl bereitgestellte Globals.
 use vars qw($init_done %defs %attr $readingFnAttributes);
 
-my $HM_VERSION = "0.5.0";
+my $HM_VERSION = "0.6.0";
 
 # Voreinstellungen aller Attribute. Sie passen zur Anlage des Autors und lassen
 # sich einzeln per attr überschreiben; HeatManager_A liest Attribut oder Default.
@@ -69,6 +71,7 @@ my %HM_defaults = (
     # --- allgemein ---
     hmSimulate          => 1,                                   # 1 = nur rechnen und protokollieren
     hmRules             => "curve,standby,klima,ofen,sonne,saison", # aktive Regeln
+    hmLive              => "",                                  # Regeln, die trotz hmSimulate 1 echt schalten
     hmSampleInterval    => 300,                                 # Messintervall in s (min. 60)
     hmNotifyCmd         => "",                                  # FHEM-Befehl für Meldungen, $MSG wird ersetzt
     hmOutdoorSensor     => "Mobil3data:temperature",            # Außentemperatur
@@ -157,6 +160,7 @@ sub HeatManager_Initialize {
           "disable:0,1 "
         . "hmSimulate:1,0 "
         . "hmRules:multiple-strict,curve,standby,klima,ofen,sonne,saison "
+        . "hmLive:multiple-strict,curve,standby,klima,ofen,sonne,saison "
         . "hmSampleInterval hmNotifyCmd:textField-long hmOutdoorSensor "
         # --- Thermostate / Räume ---
         . "hmThermostats hmIgnore hmRoomSensors:textField-long "
@@ -199,6 +203,17 @@ sub HeatManager_A {
 sub HeatManager_RuleOn {
     my ($name, $rule) = @_;
     return (grep { $_ eq $rule } split(/,/, HeatManager_A($name, "hmRules"))) ? 1 : 0;
+}
+
+# ----------------------------------------------------------------------------
+# HeatManager_Sim
+#   Simuliert diese Regel? Ja, wenn hmSimulate 1 und die Regel nicht in
+#   hmLive steht. hmSimulate 0 schaltet alle Regeln scharf.
+# ----------------------------------------------------------------------------
+sub HeatManager_Sim {
+    my ($name, $rule) = @_;
+    return 0 if (!HeatManager_A($name, "hmSimulate"));
+    return (grep { $_ eq $rule } split(/,/, HeatManager_A($name, "hmLive"))) ? 0 : 1;
 }
 
 # ----------------------------------------------------------------------------
@@ -649,7 +664,7 @@ sub HeatManager_Curve {
         HeatManager_Do($hash, "set $heater $rd $target", "curve",
                        "Heizkurve $rd $cur -> $target ($e->{reason})");
         HeatManager_VerifyLater($hash, $heater, $rd, $target, 1)
-            if (!HeatManager_A($name, "hmSimulate"));
+            if (!HeatManager_Sim($name, "curve"));
     }
     return $info;
 }
@@ -695,7 +710,7 @@ sub HeatManager_Oven {
     my ($st, $ins, $tile) = HeatManager_OvenState($hash);
     my $old  = ReadingsVal($name, "oven_state", "aus");
     my $otmp = HeatManager_A($name, "hmOvenTemp");
-    my $sim  = HeatManager_A($name, "hmSimulate");
+    my $sim  = HeatManager_Sim($name, "ofen");
 
     readingsBeginUpdate($hash);
     readingsBulkUpdate($hash, "oven_state",  $st);
@@ -986,13 +1001,13 @@ sub HeatManager_SunTick {
         readingsEndUpdate($hash, 1);
         return undef if ($t == $cur);
         HeatManager_Do($hash, "set $heater $rd $t", "sonne", "Sonne erwartet: $rd $cur -> $t");
-        HeatManager_VerifyLater($hash, $heater, $rd, $t, 1) if (!HeatManager_A($name, "hmSimulate"));
+        HeatManager_VerifyLater($hash, $heater, $rd, $t, 1) if (!HeatManager_Sim($name, "sonne"));
     } elsif (!$want && $active) {
         my $base = ReadingsVal($name, "sun_base", $cur);
         readingsSingleUpdate($hash, "sun_active", "off", 1);
-        return undef if ($base == $cur && !HeatManager_A($name, "hmSimulate"));
+        return undef if ($base == $cur && !HeatManager_Sim($name, "sonne"));
         HeatManager_Do($hash, "set $heater $rd $base", "sonne", "Sonnenfenster vorbei: $rd zurueck auf $base");
-        HeatManager_VerifyLater($hash, $heater, $rd, $base, 1) if (!HeatManager_A($name, "hmSimulate"));
+        HeatManager_VerifyLater($hash, $heater, $rd, $base, 1) if (!HeatManager_Sim($name, "sonne"));
     }
     return undef;
 }
@@ -1060,7 +1075,7 @@ sub HeatManager_Season {
             HeatManager_Do($hash, $cmd, "saison", "Heizsaison: $new (Thermostate $val)");
         } else {
             my $delay = 20 * $i;
-            if (HeatManager_A($name, "hmSimulate")) {
+            if (HeatManager_Sim($name, "saison")) {
                 HeatManager_Do($hash, $cmd, "saison");
             } else {
                 InternalTimer(gettimeofday() + $delay, sub { HeatManager_Safe($hash, "Saison", sub { HeatManager_Do($hash, $cmd, "saison") }) }, "season:$name:$t", 0);
@@ -1077,13 +1092,14 @@ sub HeatManager_Season {
 
 # ----------------------------------------------------------------------------
 # HeatManager_Do
-#   Einziger Weg, auf dem das Modul schaltet. Simulation: nur Reading
-#   sim_<regel> und Log. Sonst Befehl ausführen und optional melden.
+#   Einziger Weg, auf dem das Modul schaltet. Simuliert die Regel
+#   (HeatManager_Sim): nur Reading sim_<regel> und Log. Sonst Befehl
+#   ausführen und optional melden.
 # ----------------------------------------------------------------------------
 sub HeatManager_Do {
     my ($hash, $cmd, $rule, $msg) = @_;
     my $name = $hash->{NAME};
-    if (HeatManager_A($name, "hmSimulate")) {
+    if (HeatManager_Sim($name, $rule)) {
         readingsBeginUpdate($hash);
         readingsBulkUpdate($hash, "sim_$rule",   $cmd);
         readingsBulkUpdate($hash, "last_action", "SIMULATION: $cmd");
@@ -1170,7 +1186,8 @@ sub HeatManager_Get {
         if (!defined($cmd) || $cmd ne "status");
     my $e = HeatManager_Evaluate($hash);
     return join("\n",
-        "HeatManager v$HM_VERSION" . (HeatManager_A($name, "hmSimulate") ? " (Simulation)" : ""),
+        "HeatManager v$HM_VERSION" . (!HeatManager_A($name, "hmSimulate") ? ""
+            : " (Simulation" . (HeatManager_A($name, "hmLive") ne "" ? ", scharf: " . HeatManager_A($name, "hmLive") : "") . ")"),
         "Messwerte 24h:    $e->{samples} ($e->{samplePct} %)",
         sprintf("Ventile Mittel:   %.1f %%", $e->{valveAvg}),
         "Hoechstes Ventil: " . ($e->{maxRoom} ? sprintf("%s %.0f %%", $e->{maxRoom}, $e->{maxValve}) : "-"),
@@ -1231,7 +1248,8 @@ sub HeatManager_Get {
   <b>Attribute</b>
   <ul>
     <li><a id="HeatManager-attr-hmSimulate"></a><b>hmSimulate</b> 1|0 &ndash; Simulation (Default 1)</li>
-    <li><a id="HeatManager-attr-hmRules"></a><b>hmRules</b> &ndash; aktive Regeln: curve, standby, klima, ofen</li>
+    <li><a id="HeatManager-attr-hmRules"></a><b>hmRules</b> &ndash; aktive Regeln: curve, standby, klima, ofen, sonne, saison</li>
+    <li><a id="HeatManager-attr-hmLive"></a><b>hmLive</b> &ndash; Regeln, die trotz <code>hmSimulate 1</code> echt schalten (einzeln scharf schalten), z.B. <code>ofen,saison</code>. Default leer.</li>
     <li><a id="HeatManager-attr-hmThermostats"></a><b>hmThermostats</b> &ndash; devspec der Thermostate (type=HeatingThermostat)</li>
     <li><a id="HeatManager-attr-hmIgnore"></a><b>hmIgnore</b> &ndash; auszunehmende Thermostate</li>
     <li><a id="HeatManager-attr-hmRoomSensors"></a><b>hmRoomSensors</b> &ndash; Thermostat:Sensor[:Reading], z. B. <code>MAX_040549:Mobil5data</code>; nur diese Räume können als &bdquo;zu kalt&ldquo; gelten</li>

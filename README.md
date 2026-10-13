@@ -49,10 +49,17 @@ Wichtige Readings: `valve_avg_now`, `valve_avg_24h`, `valve_max_room`,
 `cold_room`, `samples_24h`, `fine_current`, `fine_target`, `decision`,
 `standby_target`, `standby_info`, `verify`, `last_action`.
 
+## Regeln einzeln scharf schalten
+
+`hmSimulate 1` (Default) lässt alle Regeln nur rechnen. Regeln in `hmLive`
+schalten trotzdem echt, z.B. erst `attr heizung hmLive ofen,saison`, später
+weitere dazu. `hmSimulate 0` schaltet alle Regeln scharf. `get heizung status`
+zeigt in der ersten Zeile, welche Regeln scharf sind.
+
 ## Attribute
 
 Siehe Commandref im Modul (`help HeatManager`). Die wichtigsten:
-`hmSimulate`, `hmRules`, `hmThermostats`, `hmIgnore`, `hmRoomSensors`,
+`hmSimulate`, `hmLive`, `hmRules`, `hmThermostats`, `hmIgnore`, `hmRoomSensors`,
 `hmHeater`, `hmFineReading`, `hmModeReading`, `hmFineMin`/`hmFineMax`,
 `hmCheckTime`, `hmValveLow`/`hmValveHigh`, `hmColdDelta`/`hmColdMinutes`,
 `hmRampIgnore`, `hmStandbyLow`/`hmStandbyHigh`/`hmStandbyMinTime`, `hmNotifyCmd`.
