@@ -24,7 +24,7 @@
 #     Zeitfenster, mit Freigabe der Klima-Heizgrenze, genug Akku (oder
 #     erlaubtem Netzstrom), begrenzten Starts und Mindestlauf-/Pausenzeiten.
 #     Läuft die vorhandene Solar-Automatik der Klima (auto_on), hält sich das
-#     Modul raus. Notfall (kein Netz am Wechselrichter) sperrt die Klima.
+#     Modul raus. Stromausfall (kein Netz am Wechselrichter) sperrt die Klima.
 #   * ofen: erkennt am Stahleinsatz und an den Kacheln, ob der Kachelofen
 #     brennt oder noch Wärme abgibt, und nimmt solange die Thermostate der
 #     mitbeheizten Räume zurück. Danach wird der vorherige Zustand
@@ -45,7 +45,7 @@
 # keine eigene Hardware.
 #
 # Autor:    ahlers2mi
-# Version:  v0.4.1
+# Version:  v0.5.0
 # Lizenz:   GPL v2 oder höher (wie FHEM)
 ##############################################################################
 
@@ -61,7 +61,7 @@ use JSON::PP ();
 # Von fhem.pl bereitgestellte Globals.
 use vars qw($init_done %defs %attr $readingFnAttributes);
 
-my $HM_VERSION = "0.4.1";
+my $HM_VERSION = "0.5.0";
 
 # Voreinstellungen aller Attribute. Sie passen zur Anlage des Autors und lassen
 # sich einzeln per attr überschreiben; HeatManager_A liest Attribut oder Default.
@@ -120,11 +120,11 @@ my %HM_defaults = (
     hmClimaMinRun       => 60,                                  # min Mindestlaufzeit
     hmClimaMinOff       => 60,                                  # min Mindestpause
     hmClimaMaxStarts    => 2,                                   # Starts pro Tag
-    # --- Notfall (kein Netz) ---
-    hmGridSensor        => "MQTT2_Wechselrichter1:netzspannung",# Netzspannung am Wechselrichter
-    hmGridMin           => 100,                                 # V darunter = Notfall
-    hmEmergencyReading  => "d_solar:index",                     # Solarindex der vorhandenen Logik
-    hmEmergencyBelow    => -40,                                 # <= Wert = Notfall (n_d_solar_index)
+    # --- Stromausfall (kein Netz) ---
+    hmOutageGridSensor  => "MQTT2_Wechselrichter1:netzspannung",# Netzspannung am Wechselrichter
+    hmOutageGridMin     => 100,                                 # V darunter = Stromausfall
+    hmOutageIndexReading => "d_solar:index",                    # Solarindex der vorhandenen Logik
+    hmOutageIndexBelow  => -40,                                 # <= Wert = Stromausfall (n_d_solar_index)
     # --- Regel sonne ---
     hmSunForecast       => "Forecast",                          # SolarForecast-Gerät (Today_HourHH_PVforecast)
     hmSunWindow         => "09:00-15:00",                       # Sonnenfenster
@@ -173,8 +173,8 @@ sub HeatManager_Initialize {
         . "hmClimaRoom hmClimaDevice hmClimaAc hmClimaGate hmClimaAffected hmClimaValve "
         . "hmClimaValveMinutes hmClimaTimes hmClimaSetTemp hmClimaSoc hmClimaSocReading "
         . "hmClimaGrid:0,1 hmClimaMinOutdoor hmClimaMinRun hmClimaMinOff hmClimaMaxStarts "
-        # --- Notfall ---
-        . "hmGridSensor hmGridMin hmEmergencyReading hmEmergencyBelow "
+        # --- Stromausfall ---
+        . "hmOutageGridSensor hmOutageGridMin hmOutageIndexReading hmOutageIndexBelow "
         # --- sonne ---
         . "hmSunForecast hmSunWindow hmSunCheckTime hmSunPV hmSunTempReading hmSunMinTemp hmSunStep "
         # --- saison ---
@@ -252,7 +252,7 @@ sub HeatManager_Attr {
     if ($cmd eq "set" && $attr =~ /^hm(SunWindow|ClimaTimes)$/) {
         return "$attr: HH:MM-HH:MM erwartet" if ($val !~ /^\d\d:\d\d-\d\d:\d\d(,\d\d:\d\d-\d\d:\d\d)*$/);
     }
-    if ($cmd eq "set" && $attr =~ /^hm(FineMin|FineMax|SampleInterval|ValveLow|ValveHigh|ColdDelta|ColdMinutes|RampIgnore|MinSamplesPct|StandbyLow|StandbyHigh|StandbyMinTime|OvenBurn|OvenStore|OvenTemp|ClimaValve|ClimaValveMinutes|ClimaSetTemp|ClimaSoc|ClimaMinOutdoor|ClimaMinRun|ClimaMinOff|ClimaMaxStarts|GridMin|EmergencyBelow|SunPV|SunMinTemp|SunStep|SeasonOn|SeasonOff|SeasonDays)$/) {
+    if ($cmd eq "set" && $attr =~ /^hm(FineMin|FineMax|SampleInterval|ValveLow|ValveHigh|ColdDelta|ColdMinutes|RampIgnore|MinSamplesPct|StandbyLow|StandbyHigh|StandbyMinTime|OvenBurn|OvenStore|OvenTemp|ClimaValve|ClimaValveMinutes|ClimaSetTemp|ClimaSoc|ClimaMinOutdoor|ClimaMinRun|ClimaMinOff|ClimaMaxStarts|OutageGridMin|OutageIndexBelow|SunPV|SunMinTemp|SunStep|SeasonOn|SeasonOff|SeasonDays)$/) {
         return "$attr: Zahl erwartet" if ($val !~ /^-?\d+(\.\d+)?$/);
     }
     if ($attr eq "hmCheckTime" && $init_done && $hash) {
@@ -274,6 +274,7 @@ sub HeatManager_restoreState {
     my $name = $hash->{NAME};
     return undef if ($hash->{helper}{restoreDone});
     $hash->{helper}{restoreDone} = 1;
+    delete $hash->{READINGS}{notfall};      # bis v0.4.1, heißt jetzt powerOutage
     return undef if (@{$hash->{helper}{samples} // []});    # defmod im Betrieb: Speicher ist aktueller
 
     my $json = ReadingsVal($name, ".samples", "");
@@ -751,20 +752,20 @@ sub HeatManager_InWindow {
 }
 
 # ----------------------------------------------------------------------------
-# HeatManager_Emergency
-#   Notfall = kein Netz am Wechselrichter. Erkannt wie in der vorhandenen
-#   Solarsteuerung: Netzspannung unter hmGridMin ODER Solarindex
-#   (hmEmergencyReading, d_solar:index) bei hmEmergencyBelow oder darunter -
+# HeatManager_PowerOutage
+#   Stromausfall = kein Netz am Wechselrichter. Erkannt wie in der vorhandenen
+#   Solarsteuerung: Netzspannung unter hmOutageGridMin ODER Solarindex
+#   (hmOutageIndexReading, d_solar:index) bei hmOutageIndexBelow oder darunter -
 #   dann schaltet n_d_solar_index alle großen Verbraucher ab. Das Modul startet
 #   die Klima dann nie und beendet einen eigenen Lauf sofort. Fehlende Werte
-#   gelten nicht als Notfall.
+#   gelten nicht als Stromausfall.
 # ----------------------------------------------------------------------------
-sub HeatManager_Emergency {
+sub HeatManager_PowerOutage {
     my ($name) = @_;
-    my $v = HeatManager_SensorVal(HeatManager_A($name, "hmGridSensor"));
-    return 1 if (defined($v) && $v < HeatManager_A($name, "hmGridMin"));
-    my $i = HeatManager_SensorVal(HeatManager_A($name, "hmEmergencyReading"));
-    return 1 if (defined($i) && $i <= HeatManager_A($name, "hmEmergencyBelow"));
+    my $v = HeatManager_SensorVal(HeatManager_A($name, "hmOutageGridSensor"));
+    return 1 if (defined($v) && $v < HeatManager_A($name, "hmOutageGridMin"));
+    my $i = HeatManager_SensorVal(HeatManager_A($name, "hmOutageIndexReading"));
+    return 1 if (defined($i) && $i <= HeatManager_A($name, "hmOutageIndexBelow"));
     return 0;
 }
 
@@ -837,11 +838,11 @@ sub HeatManager_Clima {
     my $smap    = HeatManager_SensorMap($name);
     my $rtemp   = $smap->{$room} ? HeatManager_SensorVal("$smap->{$room}[0]:$smap->{$room}[1]") : undef;
     my $target  = AttrVal($room, "desiredTemperature", 20);
-    my $notfall = HeatManager_Emergency($name);
+    my $outage = HeatManager_PowerOutage($name);
 
     readingsSingleUpdate($hash, "clima_valve_avg", sprintf("%.0f", $avg), 0);
-    readingsSingleUpdate($hash, "notfall", $notfall ? "on" : "off", 1)
-        if (ReadingsVal($name, "notfall", "") ne ($notfall ? "on" : "off"));
+    readingsSingleUpdate($hash, "powerOutage", $outage ? "on" : "off", 1)
+        if (ReadingsVal($name, "powerOutage", "") ne ($outage ? "on" : "off"));
 
     # --- läuft (von uns gestartet): abschalten? ---
     if ($state eq "an") {
@@ -855,11 +856,11 @@ sub HeatManager_Clima {
             readingsEndUpdate($hash, 1);
             return undef;
         }
-        # Notfall, Zeitfenster und Sperre sofort; Energie und erreichte
+        # Stromausfall, Zeitfenster und Sperre sofort; Energie und erreichte
         # Raumtemperatur erst nach der Mindestlaufzeit
         my $run    = $now - $since;
         my $minRun = $run >= HeatManager_A($name, "hmClimaMinRun") * 60;
-        my $why = $notfall                                       ? "Notfall (kein Netz)"
+        my $why = $outage                                        ? "Stromausfall (kein Netz)"
                 : !$inWin                                        ? "Zeitfenster vorbei"
                 : !$frei                                         ? "Heizgrenze gesperrt"
                 : ($minRun && !$eok)                             ? "Energie: $etxt"
@@ -879,7 +880,7 @@ sub HeatManager_Clima {
 
     # --- aus: starten? Alle Hinderungsgründe sammeln (Reading clima_info) ---
     my @no;
-    push @no, "Notfall (kein Netz)"   if ($notfall);
+    push @no, "Stromausfall (kein Netz)"   if ($outage);
     push @no, sprintf("Ventil %.0f %%", $avg)
                                       if (!$full || $avg < HeatManager_A($name, "hmClimaValve"));
     push @no, "Zeitfenster"           if (!$inWin);
@@ -1179,7 +1180,7 @@ sub HeatManager_Get {
             . " (Einsatz " . ReadingsVal($name, "oven_insert", "?")
             . ", Kacheln " . ReadingsVal($name, "oven_tiles", "?") . ")",
         "Klima:            " . ReadingsVal($name, "clima_state", "aus") . " - " . ReadingsVal($name, "clima_info", "-"),
-        "Notfall:          " . ReadingsVal($name, "notfall", "off"),
+        "powerOutage:      " . ReadingsVal($name, "powerOutage", "off"),
         "Sonne:            " . ReadingsVal($name, "sun_planned", "-") . " - " . ReadingsVal($name, "sun_forecast", "-")
             . (ReadingsVal($name, "sun_active", "off") eq "on" ? " (aktiv)" : ""),
         "Saison:           " . ReadingsVal($name, "season_info", "-"),
@@ -1243,7 +1244,7 @@ sub HeatManager_Get {
         <b>hmClimaValve</b> (50 %), <b>hmClimaValveMinutes</b> (60), <b>hmClimaTimes</b> (07:00-20:30), <b>hmClimaSetTemp</b> (26),
         <b>hmClimaSoc</b>/<b>hmClimaSocReading</b> (60 %), <b>hmClimaGrid</b> (0 = nur Akku), <b>hmClimaMinOutdoor</b> (3),
         <b>hmClimaMinRun</b>/<b>hmClimaMinOff</b> (60 min), <b>hmClimaMaxStarts</b> (2) &ndash; Regel klima</li>
-    <li><a id="HeatManager-attr-hmGridSensor"></a><b>hmGridSensor</b>/<b>hmGridMin</b> (100 V), <b>hmEmergencyReading</b>/<b>hmEmergencyBelow</b> (d_solar:index, -40) &ndash; Notfall: kein Netz am Wechselrichter; die Klima startet nie, ein laufender Lauf des Moduls endet sofort (Reading <code>notfall</code>)</li>
+    <li><a id="HeatManager-attr-hmOutageGridSensor"></a><b>hmOutageGridSensor</b>/<b>hmOutageGridMin</b> (100 V), <b>hmOutageIndexReading</b>/<b>hmOutageIndexBelow</b> (d_solar:index, -40) &ndash; Stromausfall: kein Netz am Wechselrichter; die Klima startet nie, ein laufender Lauf des Moduls endet sofort (Reading <code>powerOutage</code>)</li>
     <li><b>hmSunForecast</b> (Forecast), <b>hmSunWindow</b> (09:00-15:00), <b>hmSunCheckTime</b> (06:00), <b>hmSunPV</b> (8000 Wh),
         <b>hmSunTempReading</b> (rem_DWD:fc0_12_TTT), <b>hmSunMinTemp</b> (3), <b>hmSunStep</b> (1) &ndash; Regel sonne</li>
     <li><b>hmSeasonForecast</b> (rem_DWD), <b>hmSeasonOn</b> (12), <b>hmSeasonOff</b> (16), <b>hmSeasonDays</b> (3) &ndash; Regel saison:
@@ -1258,7 +1259,7 @@ sub HeatManager_Get {
     <li><b>fine_current</b>, <b>fine_target</b>, <b>decision</b>, <b>verify</b>, <b>next_check</b></li>
     <li><b>standby_target</b>, <b>standby_since</b>, <b>standby_info</b></li>
     <li><b>oven_state</b> (aus|brennt|speichert), <b>oven_insert</b>, <b>oven_tiles</b>, <b>oven_since</b>, <b>oven_prev_&lt;thermostat&gt;</b></li>
-    <li><b>clima_state</b>, <b>clima_info</b>, <b>clima_valve_avg</b>, <b>clima_starts_today</b>, <b>notfall</b></li>
+    <li><b>clima_state</b>, <b>clima_info</b>, <b>clima_valve_avg</b>, <b>clima_starts_today</b>, <b>powerOutage</b></li>
     <li><b>sun_forecast</b>, <b>sun_planned</b>, <b>sun_active</b>, <b>sun_base</b>, <b>season</b>, <b>season_count</b>, <b>season_info</b></li>
     <li><b>last_action</b>, <b>sim_&lt;regel&gt;</b>; versteckt <b>.samples</b> (Messwerte für den Neustart)</li>
   </ul>

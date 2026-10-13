@@ -68,7 +68,7 @@ sh t/run.sh
 
 Läuft ohne FHEM (`t/fhem_stub.pl` ersetzt die FHEM-API, die Uhr ist simulierbar) und
 prüft in `01_curve.t` … `04_klima.t` Heizkurve, Restore nach Neustart, Standby-Hysterese,
-Ofen und Klima inkl. Notfall (70 Fälle, `01_curve.t` … `05_sonne_saison.t`).
+Ofen und Klima inkl. Stromausfall (70 Fälle, `01_curve.t` … `05_sonne_saison.t`).
 
 Räume, die gerade von Ofen oder Klima beeinflusst werden, zählen nicht für die
 Heizkurve (Reading `excluded_rooms`) – sonst würde die Kurve wegen der künstlich

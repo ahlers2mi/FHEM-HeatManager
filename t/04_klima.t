@@ -3,7 +3,7 @@
 # Regel klima (Hinweis: nach einer Pause > 60 min braucht das gleitende
 # Ventilmittel erst wieder 60 min Messwerte, daher run_samples(..., 13)).
 # Start nach Ventilmittel, Mindestlauf/Pause, Akku/Netz,
-# Nutzer- und Solar-Übernahme, Zeitfenster, Notfall.
+# Nutzer- und Solar-Übernahme, Zeitfenster, Stromausfall.
 
 use strict;
 use warnings;
@@ -52,21 +52,21 @@ $attr{hm}{hmClimaTimes} = "00:00-00:01"; $NOW += 7200; run_samples($h, 1);
 ok(rd("clima_info") =~ /Zeitfenster/, "außerhalb des Fensters kein Start");
 $attr{hm}{hmClimaTimes} = "00:00-23:59";
 
-print "\n=== Notfall über Netzspannung ===\n";
+print "\n=== Stromausfall über Netzspannung ===\n";
 $attr{hm}{hmClimaGrid} = 0; set_rd("bms", "soc", 90);
 $NOW += 7200; run_samples($h, 13);
 ok(rd("clima_state") eq "an", "läuft");
 set_rd("wr", "netzspannung", "0"); @CMDS = (); run_samples($h, 1);
 ok((grep { $_ eq "set d_clima autoTemperature aus" } @CMDS) ? 1 : 0, "Netz weg -> sofort aus (vor Mindestlauf)");
-ok(rd("notfall") eq "on", "Reading notfall on");
+ok(rd("powerOutage") eq "on", "Reading powerOutage on");
 @CMDS = (); $NOW += 7200; run_samples($h, 13);
-ok(!@CMDS && rd("clima_info") =~ /Notfall/, "kein Start im Notfall");
+ok(!@CMDS && rd("clima_info") =~ /Stromausfall/, "kein Start bei Stromausfall");
 set_rd("wr", "netzspannung", "230"); run_samples($h, 1);
-ok(rd("notfall") eq "off" && (grep { /autoTemperature 26/ } @CMDS), "Netz wieder da -> Start möglich");
+ok(rd("powerOutage") eq "off" && (grep { /autoTemperature 26/ } @CMDS), "Netz wieder da -> Start möglich");
 
-print "\n=== Notfall über Solarindex (n_d_solar_index <= -40) ===\n";
+print "\n=== Stromausfall über Solarindex (n_d_solar_index <= -40) ===\n";
 set_rd("d_solar", "index", -50); @CMDS = (); run_samples($h, 1);
-ok(rd("notfall") eq "on" && (grep { /autoTemperature aus/ } @CMDS), "Index -50 -> Notfall, Klima aus");
+ok(rd("powerOutage") eq "on" && (grep { /autoTemperature aus/ } @CMDS), "Index -50 -> Stromausfall, Klima aus");
 set_rd("d_solar", "index", 2); run_samples($h, 1);
-ok(rd("notfall") eq "off", "Index 2 -> kein Notfall");
+ok(rd("powerOutage") eq "off", "Index 2 -> kein Stromausfall");
 done();
