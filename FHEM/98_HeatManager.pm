@@ -47,7 +47,7 @@
 # keine eigene Hardware.
 #
 # Autor:    ahlers2mi
-# Version:  v0.6.1
+# Version:  v0.6.2
 # Lizenz:   GPL v2 oder höher (wie FHEM)
 ##############################################################################
 
@@ -63,7 +63,7 @@ use JSON::PP ();
 # Von fhem.pl bereitgestellte Globals.
 use vars qw($init_done %defs %attr $readingFnAttributes);
 
-my $HM_VERSION = "0.6.1";
+my $HM_VERSION = "0.6.2";
 
 # Voreinstellungen aller Attribute. Sie passen zur Anlage des Autors und lassen
 # sich einzeln per attr überschreiben; HeatManager_A liest Attribut oder Default.
@@ -234,7 +234,11 @@ sub HeatManager_Define {
     $hash->{helper}{samples} //= [];   # Messwerte der letzten 26 h
     $hash->{helper}{desired} //= {};   # letzter bekannter Sollwert je Thermostat
 
-    readingsSingleUpdate($hash, "state", "initialized", 1);
+    # Bei defmod/modify die letzte Entscheidung als Status behalten, nur ein
+    # neues Gerät zeigt "initialized" (bis v0.6.1 stand danach bis zur
+    # nächsten Tagesauswertung immer "initialized" im Status).
+    my $last = ReadingsVal($hash->{NAME}, "decision", "");
+    readingsSingleUpdate($hash, "state", $last ne "" ? $last : "initialized", 1);
     RemoveInternalTimer($hash);
     InternalTimer(gettimeofday() + 3,  sub { HeatManager_Safe($hash, "Restore", \&HeatManager_restoreState) }, $hash, 0);
     InternalTimer(gettimeofday() + 30, "HeatManager_Sample",       $hash, 0);
@@ -252,6 +256,21 @@ sub HeatManager_Undef {
     RemoveInternalTimer("check:"  . $hash->{NAME});
     RemoveInternalTimer("verify:" . $hash->{NAME});
     return undef;
+}
+
+# ----------------------------------------------------------------------------
+# HeatManager_RoomTarget
+#   Aktueller Sollwert eines Thermostats für die Klima-Abschaltung: zuerst das
+#   Reading desiredTemperature (Wochenprofil/auto, also der tatsächlich gültige
+#   Wert), dann das gleichnamige Attribut, sonst 20 C. Bis v0.6.1 wurde nur das
+#   Attribut gelesen - ohne Attribut galt immer 20 C, auch bei Profil 21 C.
+# ----------------------------------------------------------------------------
+sub HeatManager_RoomTarget {
+    my ($room) = @_;
+    for my $v (ReadingsVal($room, "desiredTemperature", ""), AttrVal($room, "desiredTemperature", "")) {
+        return $v + 0 if (defined($v) && $v =~ /^\d+(?:\.\d+)?$/);
+    }
+    return 20;
 }
 
 # ----------------------------------------------------------------------------
@@ -307,6 +326,11 @@ sub HeatManager_restoreState {
     return undef if ($hash->{helper}{restoreDone});
     $hash->{helper}{restoreDone} = 1;
     delete $hash->{READINGS}{notfall};      # bis v0.4.1, heißt jetzt powerOutage
+    # Nach einem Neustart kommen die Readings erst mit dem Statefile - dann den
+    # Status aus der letzten Entscheidung wiederherstellen.
+    my $dec = ReadingsVal($name, "decision", "");
+    readingsSingleUpdate($hash, "state", $dec, 0)
+        if ($dec ne "" && ReadingsVal($name, "state", "") eq "initialized");
     return undef if (@{$hash->{helper}{samples} // []});    # defmod im Betrieb: Speicher ist aktueller
 
     my $json = ReadingsVal($name, ".samples", "");
@@ -869,7 +893,7 @@ sub HeatManager_Clima {
     my ($eok, $etxt) = HeatManager_ClimaEnergyOk($name, $state eq "an" ? 10 : 0);
     my $smap    = HeatManager_SensorMap($name);
     my $rtemp   = $smap->{$room} ? HeatManager_SensorVal("$smap->{$room}[0]:$smap->{$room}[1]") : undef;
-    my $target  = AttrVal($room, "desiredTemperature", 20);
+    my $target  = HeatManager_RoomTarget($room);
     my $outage = HeatManager_PowerOutage($name);
 
     readingsSingleUpdate($hash, "clima_valve_avg", sprintf("%.0f", $avg), 0);
