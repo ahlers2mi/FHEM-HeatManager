@@ -47,7 +47,7 @@
 # keine eigene Hardware.
 #
 # Autor:    ahlers2mi
-# Version:  v0.6.0
+# Version:  v0.6.1
 # Lizenz:   GPL v2 oder höher (wie FHEM)
 ##############################################################################
 
@@ -63,7 +63,7 @@ use JSON::PP ();
 # Von fhem.pl bereitgestellte Globals.
 use vars qw($init_done %defs %attr $readingFnAttributes);
 
-my $HM_VERSION = "0.6.0";
+my $HM_VERSION = "0.6.1";
 
 # Voreinstellungen aller Attribute. Sie passen zur Anlage des Autors und lassen
 # sich einzeln per attr überschreiben; HeatManager_A liest Attribut oder Default.
@@ -152,6 +152,7 @@ sub HeatManager_Initialize {
 
     $hash->{DefFn}   = \&HeatManager_Define;
     $hash->{UndefFn} = \&HeatManager_Undef;
+    $hash->{RenameFn} = \&HeatManager_Rename;
     $hash->{SetFn}   = \&HeatManager_Set;
     $hash->{GetFn}   = \&HeatManager_Get;
     $hash->{AttrFn}  = \&HeatManager_Attr;
@@ -250,6 +251,22 @@ sub HeatManager_Undef {
     RemoveInternalTimer($hash);
     RemoveInternalTimer("check:"  . $hash->{NAME});
     RemoveInternalTimer("verify:" . $hash->{NAME});
+    return undef;
+}
+
+# ----------------------------------------------------------------------------
+# HeatManager_Rename
+#   rename: Der Tagestimer trägt den Gerätenamen im Argument ("check:<name>").
+#   Ohne Neuplanung findet HeatManager_CheckTimer nach einer Umbenennung das
+#   Gerät nicht mehr und plant sich auch nicht neu ein - die Tagesauswertung
+#   fiele dauerhaft aus. Daher alten Timer entfernen und neu einplanen.
+# ----------------------------------------------------------------------------
+sub HeatManager_Rename {
+    my ($new, $old) = @_;
+    my $hash = $defs{$new};
+    return undef if (!$hash);
+    RemoveInternalTimer("check:$old");
+    HeatManager_ScheduleCheck($hash);
     return undef;
 }
 
