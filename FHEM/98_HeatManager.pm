@@ -47,7 +47,7 @@
 # keine eigene Hardware.
 #
 # Autor:    ahlers2mi
-# Version:  v0.6.2
+# Version:  v0.7.0
 # Lizenz:   GPL v2 oder höher (wie FHEM)
 ##############################################################################
 
@@ -63,7 +63,7 @@ use JSON::PP ();
 # Von fhem.pl bereitgestellte Globals.
 use vars qw($init_done %defs %attr $readingFnAttributes);
 
-my $HM_VERSION = "0.6.2";
+my $HM_VERSION = "0.7.0";
 
 # Voreinstellungen aller Attribute. Sie passen zur Anlage des Autors und lassen
 # sich einzeln per attr überschreiben; HeatManager_A liest Attribut oder Default.
@@ -75,6 +75,7 @@ my %HM_defaults = (
     hmSampleInterval    => 300,                                 # Messintervall in s (min. 60)
     hmNotifyCmd         => "",                                  # FHEM-Befehl für Meldungen, $MSG wird ersetzt
     hmOutdoorSensor     => "Mobil3data:temperature",            # Außentemperatur
+    hmFlowSensor        => "mySolvis:S12.Vorlauftemperatur_HK1",# Vorlauftemperatur (nur Anzeige)
     # --- Thermostate / Räume ---
     hmThermostats       => "type=HeatingThermostat",            # devspec der Heizkörperthermostate
     hmIgnore            => "",                                  # nie bewerten (z. B. Keller)
@@ -162,7 +163,7 @@ sub HeatManager_Initialize {
         . "hmSimulate:1,0 "
         . "hmRules:multiple-strict,curve,standby,klima,ofen,sonne,saison "
         . "hmLive:multiple-strict,curve,standby,klima,ofen,sonne,saison "
-        . "hmSampleInterval hmNotifyCmd:textField-long hmOutdoorSensor "
+        . "hmSampleInterval hmNotifyCmd:textField-long hmOutdoorSensor hmFlowSensor "
         # --- Thermostate / Räume ---
         . "hmThermostats hmIgnore hmRoomSensors:textField-long "
         # --- Wärmeerzeuger ---
@@ -406,6 +407,19 @@ sub HeatManager_SensorVal {
 }
 
 # ----------------------------------------------------------------------------
+# HeatManager_FlowVal
+#   Vorlauftemperatur aus hmFlowSensor; undef, wenn "none", nicht
+#   lesbar oder unplausibel (außerhalb 0..120 °C, z. B. 250 bei offenem Fühler).
+# ----------------------------------------------------------------------------
+sub HeatManager_FlowVal {
+    my ($name) = @_;
+    my $spec = HeatManager_A($name, "hmFlowSensor") // "";
+    return undef if ($spec eq "none");
+    my $v = HeatManager_SensorVal($spec);
+    return (defined($v) && $v > 0 && $v <= 120) ? $v : undef;
+}
+
+# ----------------------------------------------------------------------------
 # HeatManager_Sample
 #   Messung alle hmSampleInterval Sekunden:
 #     1. Ofenregel ausführen und Ofen-/Klima-beeinflusste Räume bestimmen.
@@ -506,7 +520,13 @@ sub HeatManager_SampleRun {
     # Mittel über ALLE Thermostate (auch ausgeblendete) - Grundlage für Standby
     my $avg = $n ? $sum / $n : 0;
 
-    push @{$hash->{helper}{samples}}, { t => $now, valve => \%valve, cold => \%cold };
+    # Vorlauftemperatur - nur Information, fließt in keine Entscheidung ein.
+    # Werte außerhalb 0..120 °C (z. B. 250 = Fühler nicht angeschlossen) verwerfen.
+    my $flow = HeatManager_FlowVal($name);
+
+    my $smp = { t => $now, valve => \%valve, cold => \%cold };
+    $smp->{flow} = $flow + 0 if (defined($flow));
+    push @{$hash->{helper}{samples}}, $smp;
     @{$hash->{helper}{samples}} = grep { $now - $_->{t} < 26 * 3600 } @{$hash->{helper}{samples}};
     HeatManager_saveState($hash);
 
@@ -514,6 +534,8 @@ sub HeatManager_SampleRun {
     readingsBulkUpdate($hash, "valve_avg_now",  sprintf("%.1f", $avg));
     readingsBulkUpdate($hash, "ramp_rooms",     join(",", sort keys %ramp) || "none");
     readingsBulkUpdate($hash, "excluded_rooms", join(",", map { "$_:$excl{$_}" } sort keys %excl) || "none");
+    readingsBulkUpdate($hash, "flow_now",       defined($flow) ? sprintf("%.1f", $flow) : "?")
+        if (HeatManager_A($name, "hmFlowSensor") !~ /^(none)?$/);
     readingsEndUpdate($hash, 1);
 
     # 3. laufende Regeln
@@ -636,6 +658,15 @@ sub HeatManager_Evaluate {
     my ($coldRoom) = sort { $cmin{$b} <=> $cmin{$a} } keys %cmin;
     my $coldMin = $coldRoom ? $cmin{$coldRoom} : 0;
 
+    # Vorlauf (nur Anzeige): Mittel, Minimum, Maximum der letzten 24 h
+    my @flow = map { $_->{flow} } grep { defined($_->{flow}) } @s;
+    my ($fsum, $fmin, $fmax) = (0, undef, undef);
+    foreach (@flow) {
+        $fsum += $_;
+        $fmin = $_ if (!defined($fmin) || $_ < $fmin);
+        $fmax = $_ if (!defined($fmax) || $_ > $fmax);
+    }
+
     my %r = (
         samples   => scalar(@s),
         samplePct => $expected ? int(100 * @s / $expected) : 0,
@@ -644,6 +675,9 @@ sub HeatManager_Evaluate {
         maxValve  => $maxRoom ? $vavg{$maxRoom} : 0,
         coldRoom  => $coldMin > 0 ? $coldRoom : "",
         coldMin   => $coldMin,
+        flowAvg   => @flow ? $fsum / @flow : undef,
+        flowMin   => $fmin,
+        flowMax   => $fmax,
         step      => 0,
         reason    => "",
     );
@@ -689,12 +723,20 @@ sub HeatManager_Curve {
         $info .= " -> Grenze erreicht" if ($t == $target);
         $target = $t;
     }
+    # Vorlauf zur Einordnung anhängen (ändert die Entscheidung nicht)
+    $info .= sprintf(", Vorlauf Ø %.0f °C (%.0f-%.0f)", $e->{flowAvg}, $e->{flowMin}, $e->{flowMax})
+        if (defined($e->{flowAvg}));
 
     readingsBeginUpdate($hash);
     readingsBulkUpdate($hash, "valve_avg_24h",  sprintf("%.1f", $e->{valveAvg}));
     readingsBulkUpdate($hash, "valve_max_room", $e->{maxRoom} ? sprintf("%s:%.0f", $e->{maxRoom}, $e->{maxValve}) : "none");
     readingsBulkUpdate($hash, "cold_room",      $e->{coldRoom} ? sprintf("%s:%d", $e->{coldRoom}, $e->{coldMin}) : "none");
     readingsBulkUpdate($hash, "samples_24h",    "$e->{samples} ($e->{samplePct} %)");
+    if (defined($e->{flowAvg})) {
+        readingsBulkUpdate($hash, "flow_avg_24h", sprintf("%.1f", $e->{flowAvg}));
+        readingsBulkUpdate($hash, "flow_min_24h", sprintf("%.1f", $e->{flowMin}));
+        readingsBulkUpdate($hash, "flow_max_24h", sprintf("%.1f", $e->{flowMax}));
+    }
     readingsBulkUpdate($hash, "fine_current",   $cur // "?");
     readingsBulkUpdate($hash, "fine_target",    $target // "?");
     readingsBulkUpdate($hash, "decision",       $info);
@@ -1233,6 +1275,8 @@ sub HeatManager_Get {
         sprintf("Ventile Mittel:   %.1f %%", $e->{valveAvg}),
         "Hoechstes Ventil: " . ($e->{maxRoom} ? sprintf("%s %.0f %%", $e->{maxRoom}, $e->{maxValve}) : "-"),
         "Zu kalt:          " . ($e->{coldRoom} ? "$e->{coldRoom} $e->{coldMin} min" : "-"),
+        "Vorlauf:          " . (defined(HeatManager_FlowVal($name)) ? sprintf("jetzt %.1f °C", HeatManager_FlowVal($name)) : "jetzt -")
+            . (defined($e->{flowAvg}) ? sprintf(", 24h Ø %.1f °C (%.1f-%.1f)", $e->{flowAvg}, $e->{flowMin}, $e->{flowMax}) : ""),
         "Entscheidung:     " . ($e->{step} > 0 ? "+1" : $e->{step} < 0 ? "-1" : "0") . " - $e->{reason}",
         "Ofen:             " . ReadingsVal($name, "oven_state", "?")
             . " (Einsatz " . ReadingsVal($name, "oven_insert", "?")
@@ -1308,6 +1352,7 @@ sub HeatManager_Get {
         <b>hmSunTempReading</b> (rem_DWD:fc0_12_TTT), <b>hmSunMinTemp</b> (3), <b>hmSunStep</b> (1) &ndash; Regel sonne</li>
     <li><b>hmSeasonForecast</b> (rem_DWD), <b>hmSeasonOn</b> (12), <b>hmSeasonOff</b> (16), <b>hmSeasonDays</b> (3) &ndash; Regel saison:
         Thermostate auf <code>auto</code> bzw. <code>off</code></li>
+    <li><a id="HeatManager-attr-hmFlowSensor"></a><b>hmFlowSensor</b> &ndash; Vorlauftemperatur als Gerät:Reading (Default <code>mySolvis:S12.Vorlauftemperatur_HK1</code>, <code>none</code> = aus). Nur Anzeige: Readings <code>flow_*</code> und Zusatz in <code>decision</code>, keine Regel nutzt den Wert. Werte außerhalb 0&ndash;120 °C werden verworfen.</li>
     <li><b>hmOutdoorSensor</b> &ndash; Außentemperatur; <b>hmSampleInterval</b> (300 s); <b>hmNotifyCmd</b> &ndash; Meldungsbefehl, <code>$MSG</code> wird ersetzt; <b>disable</b></li>
   </ul><br>
 
@@ -1315,6 +1360,7 @@ sub HeatManager_Get {
   <b>Readings</b>
   <ul>
     <li><b>valve_avg_now</b>, <b>valve_avg_24h</b>, <b>valve_max_room</b>, <b>cold_room</b>, <b>samples_24h</b>, <b>ramp_rooms</b>, <b>excluded_rooms</b></li>
+    <li><b>flow_now</b>, <b>flow_avg_24h</b>, <b>flow_min_24h</b>, <b>flow_max_24h</b> &ndash; Vorlauftemperatur (hmFlowSensor)</li>
     <li><b>fine_current</b>, <b>fine_target</b>, <b>decision</b>, <b>verify</b>, <b>next_check</b></li>
     <li><b>standby_target</b>, <b>standby_since</b>, <b>standby_info</b></li>
     <li><b>oven_state</b> (aus|brennt|speichert), <b>oven_insert</b>, <b>oven_tiles</b>, <b>oven_since</b>, <b>oven_prev_&lt;thermostat&gt;</b></li>

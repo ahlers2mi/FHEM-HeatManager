@@ -49,6 +49,12 @@ Wichtige Readings: `valve_avg_now`, `valve_avg_24h`, `valve_max_room`,
 `cold_room`, `samples_24h`, `fine_current`, `fine_target`, `decision`,
 `standby_target`, `standby_info`, `verify`, `last_action`.
 
+Vorlauftemperatur (ab v0.7.0, nur Anzeige): `flow_now`, `flow_avg_24h`,
+`flow_min_24h`, `flow_max_24h`; die Tagesauswertung in `decision` nennt zusätzlich
+„Vorlauf Ø … °C (min-max)“. Quelle ist `hmFlowSensor` (Gerät:Reading, Default
+`mySolvis:S12.Vorlauftemperatur_HK1`, `none` = aus). Damit lässt sich ablesen, was
+eine Änderung der Heizkurve am Vorlauf bewirkt. Keine Regel nutzt den Wert.
+
 ## Regeln einzeln scharf schalten
 
 `hmSimulate 1` (Default) lässt alle Regeln nur rechnen. Regeln in `hmLive`
@@ -62,7 +68,8 @@ Siehe Commandref im Modul (`help HeatManager`). Die wichtigsten:
 `hmSimulate`, `hmLive`, `hmRules`, `hmThermostats`, `hmIgnore`, `hmRoomSensors`,
 `hmHeater`, `hmFineReading`, `hmModeReading`, `hmFineMin`/`hmFineMax`,
 `hmCheckTime`, `hmValveLow`/`hmValveHigh`, `hmColdDelta`/`hmColdMinutes`,
-`hmRampIgnore`, `hmStandbyLow`/`hmStandbyHigh`/`hmStandbyMinTime`, `hmNotifyCmd`.
+`hmRampIgnore`, `hmStandbyLow`/`hmStandbyHigh`/`hmStandbyMinTime`, `hmNotifyCmd`,
+`hmFlowSensor`.
 
 Die Messwerte überstehen einen FHEM-Neustart: sie werden stündlich im versteckten
 Reading `.samples` abgelegt (landet im Statefile) und nach dem Start zurückgeholt.
