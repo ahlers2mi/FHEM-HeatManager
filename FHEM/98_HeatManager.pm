@@ -36,6 +36,12 @@
 #   * saison: Heizbeginn/-ende nach DWD-Prognose: mehrere Tage kühl -> alle
 #     Thermostate auf auto (Wochenplan), mehrere Tage warm -> auf off (manual),
 #     wie im Sommer von Hand üblich (schont die Batterien der Thermostate).
+#   * rampe: steht im Wochenprofil eines Thermostats in hmRampMinutes ein
+#     Sprung nach oben an (mindestens hmRampMinDelta), wird vorher der
+#     Zwischenwert gesetzt ("desiredTemperature auto <Mittel>": ein Funkbefehl,
+#     das Thermostat bleibt im Automatikbetrieb und folgt ab dem Schaltpunkt
+#     wieder dem Profil). Die Ventile öffnen dadurch nicht alle gleichzeitig
+#     weit, was die Klima-Regel morgens unnötig auslösen kann.
 #
 # Standard ist der Simulationsmodus (hmSimulate 1): das Modul misst, rechnet
 # und schreibt in Readings (sim_<regel>, last_action), was es tun würde, schaltet
@@ -47,7 +53,7 @@
 # keine eigene Hardware.
 #
 # Autor:    ahlers2mi
-# Version:  v0.7.0
+# Version:  v0.8.0
 # Lizenz:   GPL v2 oder höher (wie FHEM)
 ##############################################################################
 
@@ -63,14 +69,14 @@ use JSON::PP ();
 # Von fhem.pl bereitgestellte Globals.
 use vars qw($init_done %defs %attr $readingFnAttributes);
 
-my $HM_VERSION = "0.7.0";
+my $HM_VERSION = "0.8.0";
 
 # Voreinstellungen aller Attribute. Sie passen zur Anlage des Autors und lassen
 # sich einzeln per attr überschreiben; HeatManager_A liest Attribut oder Default.
 my %HM_defaults = (
     # --- allgemein ---
     hmSimulate          => 1,                                   # 1 = nur rechnen und protokollieren
-    hmRules             => "curve,standby,klima,ofen,sonne,saison", # aktive Regeln
+    hmRules             => "curve,standby,klima,ofen,sonne,saison,rampe", # aktive Regeln
     hmLive              => "",                                  # Regeln, die trotz hmSimulate 1 echt schalten
     hmSampleInterval    => 300,                                 # Messintervall in s (min. 60)
     hmNotifyCmd         => "",                                  # FHEM-Befehl für Meldungen, $MSG wird ersetzt
@@ -124,6 +130,8 @@ my %HM_defaults = (
     hmClimaMinRun       => 60,                                  # min Mindestlaufzeit
     hmClimaMinOff       => 60,                                  # min Mindestpause
     hmClimaMaxStarts    => 2,                                   # Starts pro Tag
+    hmClimaStopValve    => 10,                                  # Ventilmittel % darunter -> aus (nach Mindestlauf)
+    hmClimaPresence     => "irgendwer:anwesend:on",             # Gerät:Reading:Regex für "jemand zu Hause", none = aus
     # --- Stromausfall (kein Netz) ---
     hmOutageGridSensor  => "MQTT2_Wechselrichter1:netzspannung",# Netzspannung am Wechselrichter
     hmOutageGridMin     => 100,                                 # V darunter = Stromausfall
@@ -142,6 +150,10 @@ my %HM_defaults = (
     hmSeasonOn          => 12,                                  # Prognose-Tagesmittel darunter -> heizen
     hmSeasonOff         => 16,                                  # darüber -> Sommer
     hmSeasonDays        => 3,                                   # so viele Tage in Folge
+    # --- Regel rampe ---
+    hmRampMinutes       => 30,                                  # so lange vor dem Profilsprung Zwischenwert
+    hmRampMinDelta      => 1.5,                                 # K, kleinere Sprünge nicht abstufen
+    hmRampRooms         => "",                                  # leer = alle Thermostate (ohne hmIgnore)
 );
 
 # ----------------------------------------------------------------------------
@@ -161,8 +173,8 @@ sub HeatManager_Initialize {
     $hash->{AttrList} =
           "disable:0,1 "
         . "hmSimulate:1,0 "
-        . "hmRules:multiple-strict,curve,standby,klima,ofen,sonne,saison "
-        . "hmLive:multiple-strict,curve,standby,klima,ofen,sonne,saison "
+        . "hmRules:multiple-strict,curve,standby,klima,ofen,sonne,saison,rampe "
+        . "hmLive:multiple-strict,curve,standby,klima,ofen,sonne,saison,rampe "
         . "hmSampleInterval hmNotifyCmd:textField-long hmOutdoorSensor hmFlowSensor "
         # --- Thermostate / Räume ---
         . "hmThermostats hmIgnore hmRoomSensors:textField-long "
@@ -179,12 +191,15 @@ sub HeatManager_Initialize {
         . "hmClimaRoom hmClimaDevice hmClimaAc hmClimaGate hmClimaAffected hmClimaValve "
         . "hmClimaValveMinutes hmClimaTimes hmClimaSetTemp hmClimaSoc hmClimaSocReading "
         . "hmClimaGrid:0,1 hmClimaMinOutdoor hmClimaMinRun hmClimaMinOff hmClimaMaxStarts "
+        . "hmClimaStopValve hmClimaPresence "
         # --- Stromausfall ---
         . "hmOutageGridSensor hmOutageGridMin hmOutageIndexReading hmOutageIndexBelow "
         # --- sonne ---
         . "hmSunForecast hmSunWindow hmSunCheckTime hmSunPV hmSunTempReading hmSunMinTemp hmSunStep "
         # --- saison ---
         . "hmSeasonForecast hmSeasonOn hmSeasonOff hmSeasonDays "
+        # --- rampe ---
+        . "hmRampMinutes hmRampMinDelta hmRampRooms "
         . $readingFnAttributes;
     return undef;
 }
@@ -407,6 +422,63 @@ sub HeatManager_SensorVal {
 }
 
 # ----------------------------------------------------------------------------
+# HeatManager_Profile
+#   Heutiges Wochenprofil eines MAX-Thermostats aus den Readings
+#   weekprofile-<n>-<Tag>-temp/-time (n: 0 = Samstag ... 6 = Freitag).
+#   Liefert [[vonMin, bisMin, Temp], ...] oder eine leere Liste.
+# ----------------------------------------------------------------------------
+sub HeatManager_Profile {
+    my ($t, $wday) = @_;
+    my $idx = ($wday + 1) % 7;
+    my ($rt) = grep { /^weekprofile-$idx-\w+-temp$/ } keys %{$defs{$t}{READINGS} // {}};
+    return [] if (!$rt);
+    (my $rtime = $rt) =~ s/-temp$/-time/;
+    my @temps = split(m{\s*/\s*}, ReadingsVal($t, $rt, ""));
+    my @times = split(m{\s*/\s*}, ReadingsVal($t, $rtime, ""));
+    my @p;
+    for my $i (0 .. $#times) {
+        my ($h1, $m1, $h2, $m2) = $times[$i] =~ /(\d+):(\d+)\s*-\s*(\d+):(\d+)/;
+        my ($tmp) = ($temps[$i] // "") =~ /(-?\d+(?:\.\d+)?)/;
+        next if (!defined($h1) || !defined($tmp));
+        push @p, [$h1 * 60 + $m1, $h2 * 60 + $m2, $tmp + 0];
+    }
+    return \@p;
+}
+
+# ----------------------------------------------------------------------------
+# HeatManager_ProfileNow
+#   Aktueller und nächster Profilabschnitt eines Thermostats sowie die Minuten
+#   bis zum nächsten Schaltpunkt: (cur, nxt, left) oder () ohne Profil.
+# ----------------------------------------------------------------------------
+sub HeatManager_ProfileNow {
+    my ($t) = @_;
+    my @lt  = localtime(time());
+    my $min = $lt[2] * 60 + $lt[1] + $lt[0] / 60;
+    my $p   = HeatManager_Profile($t, $lt[6]);
+    for my $i (0 .. $#$p) {
+        next if (!($p->[$i][0] <= $min && $min < $p->[$i][1]));
+        return ($p->[$i], $p->[$i + 1], $p->[$i + 1] ? $p->[$i + 1][0] - $min : undef);
+    }
+    return ();
+}
+
+# ----------------------------------------------------------------------------
+# HeatManager_Present
+#   Ist jemand zu Hause? hmClimaPresence = Gerät:Reading:Regex. Leer, "none"
+#   oder ein unbekanntes Gerät gelten als anwesend (keine Sperre).
+# ----------------------------------------------------------------------------
+sub HeatManager_Present {
+    my ($name) = @_;
+    my $s = HeatManager_A($name, "hmClimaPresence") // "";
+    return 1 if ($s eq "" || $s eq "none");
+    my ($d, $r, $re) = split(/:/, $s, 3);
+    return 1 if (!$d || !defined($defs{$d}));
+    $r  = "state" if (!defined($r) || $r eq "");
+    $re = "on"    if (!defined($re) || $re eq "");
+    return (ReadingsVal($d, $r, "") =~ /^(?:$re)$/) ? 1 : 0;
+}
+
+# ----------------------------------------------------------------------------
 # HeatManager_FlowVal
 #   Vorlauftemperatur aus hmFlowSensor; undef, wenn "none", nicht
 #   lesbar oder unplausibel (außerhalb 0..120 °C, z. B. 250 bei offenem Fühler).
@@ -539,10 +611,83 @@ sub HeatManager_SampleRun {
     readingsEndUpdate($hash, 1);
 
     # 3. laufende Regeln
+    HeatManager_Rampe($hash, \%excl) if (HeatManager_RuleOn($name, "rampe"));
     HeatManager_SunTick($hash)       if (HeatManager_RuleOn($name, "sonne"));
     HeatManager_Standby($hash, $avg) if (HeatManager_RuleOn($name, "standby"));
     HeatManager_Clima($hash, $hash->{helper}{valveNow}{HeatManager_A($name, "hmClimaRoom")})
         if (HeatManager_RuleOn($name, "klima"));
+    return undef;
+}
+
+# ============================================================================
+# Regel rampe
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# HeatManager_Rampe
+#   Steht im heutigen Profil eines Thermostats in hmRampMinutes ein Sprung um
+#   mindestens hmRampMinDelta nach oben an, wird der Mittelwert (0,5er Raster)
+#   mit "desiredTemperature auto <Wert>" gesetzt. Nur Thermostate im
+#   Automatikbetrieb, deren Soll gerade dem Profil entspricht (nicht von Hand,
+#   Ofen, Klima oder Abwesenheit verstellt). Einmal je Schaltpunkt und Tag;
+#   mehrere Befehle gehen im Abstand von 15 s raus (Funk-Sendekontingent).
+# ----------------------------------------------------------------------------
+sub HeatManager_Rampe {
+    my ($hash, $excl) = @_;
+    my $name  = $hash->{NAME};
+    my @lt    = localtime(time());
+    my $day   = sprintf("%04d-%02d-%02d", $lt[5] + 1900, $lt[4] + 1, $lt[3]);
+    my $ahead = HeatManager_A($name, "hmRampMinutes");
+    my $minD  = HeatManager_A($name, "hmRampMinDelta");
+    my @rooms = HeatManager_A($name, "hmRampRooms") ne ""
+              ? split(/[\s,]+/, HeatManager_A($name, "hmRampRooms"))
+              : HeatManager_Thermostats($name);
+    my $sent  = $hash->{helper}{rampSent} //= {};
+    delete $sent->{$_} for (grep { index($_, " $day ") < 0 } keys %$sent);
+
+    foreach my $t (@rooms) {
+        next if (!defined($defs{$t}) || $excl->{$t});
+        next if (ReadingsVal($t, "mode", "") ne "auto");
+        my ($cur, $nxt, $left) = HeatManager_ProfileNow($t);
+        next if (!$cur || !$nxt || !defined($left) || $left <= 0 || $left > $ahead);
+        next if ($nxt->[2] - $cur->[2] < $minD);
+        my $des = ReadingsVal($t, "desiredTemperature", "");
+        next if ($des !~ /^\d+(?:\.\d+)?$/ || abs($des - $cur->[2]) > 0.05);
+        my $key = "$t $day $nxt->[0]";
+        next if ($sent->{$key});
+        $sent->{$key} = 1;
+        my $mid = sprintf("%.1f", int($cur->[2] + $nxt->[2] + 0.5) / 2);
+        my $at  = sprintf("%02d:%02d", int($nxt->[0] / 60), $nxt->[0] % 60);
+        push @{$hash->{helper}{rampQueue}}, ["set $t desiredTemperature auto $mid",
+                                             sprintf("%s %.1f -> %s (Profil %.1f um %s)", $t, $cur->[2], $mid, $nxt->[2], $at)];
+    }
+    HeatManager_RampeQueue($hash) if (@{$hash->{helper}{rampQueue} // []} && !$hash->{helper}{rampBusy});
+    return undef;
+}
+
+# ----------------------------------------------------------------------------
+# HeatManager_RampeQueue
+#   Sendet den nächsten Zwischenwert der Warteschlange, danach alle 15 s den
+#   nächsten.
+# ----------------------------------------------------------------------------
+sub HeatManager_RampeQueue {
+    my ($hash) = @_;
+    my $name = $hash->{NAME};
+    my $e = shift @{$hash->{helper}{rampQueue} // []};
+    if (!$e) { delete $hash->{helper}{rampBusy}; return undef; }
+    readingsBeginUpdate($hash);
+    readingsBulkUpdate($hash, "rampe_info", $e->[1]);
+    readingsBulkUpdate($hash, "rampe_today", ReadingsVal($name, "rampe_today_day", "") eq substr(FmtDateTime(time()), 0, 10)
+                                             ? ReadingsVal($name, "rampe_today", 0) + 1 : 1);
+    readingsBulkUpdate($hash, "rampe_today_day", substr(FmtDateTime(time()), 0, 10));
+    readingsEndUpdate($hash, 1);
+    HeatManager_Safe($hash, "Rampe", sub { HeatManager_Do($_[0], $e->[0], "rampe", undef); });
+    if (@{$hash->{helper}{rampQueue}}) {
+        $hash->{helper}{rampBusy} = 1;
+        InternalTimer(gettimeofday() + 15, "HeatManager_RampeQueue", $hash, 0);
+    } else {
+        delete $hash->{helper}{rampBusy};
+    }
     return undef;
 }
 
@@ -937,6 +1082,7 @@ sub HeatManager_Clima {
     my $rtemp   = $smap->{$room} ? HeatManager_SensorVal("$smap->{$room}[0]:$smap->{$room}[1]") : undef;
     my $target  = HeatManager_RoomTarget($room);
     my $outage = HeatManager_PowerOutage($name);
+    my $present = HeatManager_Present($name);
 
     readingsSingleUpdate($hash, "clima_valve_avg", sprintf("%.0f", $avg), 0);
     readingsSingleUpdate($hash, "powerOutage", $outage ? "on" : "off", 1)
@@ -961,7 +1107,10 @@ sub HeatManager_Clima {
         my $why = $outage                                        ? "Stromausfall (kein Netz)"
                 : !$inWin                                        ? "Zeitfenster vorbei"
                 : !$frei                                         ? "Heizgrenze gesperrt"
+                : !$present                                      ? "niemand zu Hause"
                 : ($minRun && !$eok)                             ? "Energie: $etxt"
+                : ($minRun && $avg < HeatManager_A($name, "hmClimaStopValve"))
+                                                                 ? sprintf("Ventil %.0f %%", $avg)
                 : ($minRun && defined($rtemp) && $rtemp >= $target + 0.5)
                                                                  ? sprintf("Raum %.1f C erreicht", $rtemp)
                 :                                                  "";
@@ -983,6 +1132,12 @@ sub HeatManager_Clima {
                                       if (!$full || $avg < HeatManager_A($name, "hmClimaValve"));
     push @no, "Zeitfenster"           if (!$inWin);
     push @no, "Heizgrenze"            if (!$frei);
+    push @no, "niemand zu Hause"      if (!$present);
+    # Aufheizphase nach einem Sollwertsprung: Ventil steht nur vorübergehend weit offen
+    push @no, "Aufheizphase"          if (($now - ($hash->{helper}{desiredChange}{$room} // 0)) < HeatManager_A($name, "hmRampIgnore") * 60);
+    # Profil senkt innerhalb der Mindestlaufzeit ab -> Start lohnt nicht
+    my ($pc, $pn, $pl) = HeatManager_ProfileNow($room);
+    push @no, "Profil senkt bald ab"  if ($pn && defined($pl) && $pl <= HeatManager_A($name, "hmClimaMinRun") && $pn->[2] < $pc->[2]);
     push @no, "Klima nicht auf auto"  if (!$auto);
     push @no, "Solar-Automatik aktiv" if ($solar);
     push @no, "Klima laeuft schon"    if ($acOn);
@@ -1286,6 +1441,7 @@ sub HeatManager_Get {
         "Sonne:            " . ReadingsVal($name, "sun_planned", "-") . " - " . ReadingsVal($name, "sun_forecast", "-")
             . (ReadingsVal($name, "sun_active", "off") eq "on" ? " (aktiv)" : ""),
         "Saison:           " . ReadingsVal($name, "season_info", "-"),
+        "Rampe:            " . ReadingsVal($name, "rampe_info", "-"),
         "Ausgenommen:      " . ReadingsVal($name, "excluded_rooms", "none"));
 }
 
@@ -1350,6 +1506,8 @@ sub HeatManager_Get {
     <li><a id="HeatManager-attr-hmOutageGridSensor"></a><b>hmOutageGridSensor</b>/<b>hmOutageGridMin</b> (100 V), <b>hmOutageIndexReading</b>/<b>hmOutageIndexBelow</b> (d_solar:index, -40) &ndash; Stromausfall: kein Netz am Wechselrichter; die Klima startet nie, ein laufender Lauf des Moduls endet sofort (Reading <code>powerOutage</code>)</li>
     <li><b>hmSunForecast</b> (Forecast), <b>hmSunWindow</b> (09:00-15:00), <b>hmSunCheckTime</b> (06:00), <b>hmSunPV</b> (8000 Wh),
         <b>hmSunTempReading</b> (rem_DWD:fc0_12_TTT), <b>hmSunMinTemp</b> (3), <b>hmSunStep</b> (1) &ndash; Regel sonne</li>
+    <li><a id="HeatManager-attr-hmRampMinutes"></a><b>hmRampMinutes</b> (30), <b>hmRampMinDelta</b> (1.5), <b>hmRampRooms</b> (leer = alle) &ndash; Regel rampe: so lange vor einem Profilsprung nach oben wird der Zwischenwert mit <code>desiredTemperature auto &lt;Mittel&gt;</code> gesetzt (ein Funkbefehl, Thermostat bleibt im Automatikbetrieb)</li>
+    <li><a id="HeatManager-attr-hmClimaStopValve"></a><b>hmClimaStopValve</b> (10 %) &ndash; Klima aus, wenn das Ventilmittel des Klima-Raums nach der Mindestlaufzeit darunter liegt; <b>hmClimaPresence</b> (irgendwer:anwesend:on, <code>none</code> = aus) &ndash; Gerät:Reading:Regex, niemand zu Hause -> kein Start, laufende Klima aus. Außerdem kein Start in der Aufheizphase nach einem Sollwertsprung (hmRampIgnore) und wenn das Profil des Klima-Raums innerhalb der Mindestlaufzeit absenkt.</li>
     <li><b>hmSeasonForecast</b> (rem_DWD), <b>hmSeasonOn</b> (12), <b>hmSeasonOff</b> (16), <b>hmSeasonDays</b> (3) &ndash; Regel saison:
         Thermostate auf <code>auto</code> bzw. <code>off</code></li>
     <li><a id="HeatManager-attr-hmFlowSensor"></a><b>hmFlowSensor</b> &ndash; Vorlauftemperatur als Gerät:Reading (Default <code>mySolvis:S12.Vorlauftemperatur_HK1</code>, <code>none</code> = aus). Nur Anzeige: Readings <code>flow_*</code> und Zusatz in <code>decision</code>, keine Regel nutzt den Wert. Werte außerhalb 0&ndash;120 °C werden verworfen.</li>
@@ -1365,7 +1523,7 @@ sub HeatManager_Get {
     <li><b>standby_target</b>, <b>standby_since</b>, <b>standby_info</b></li>
     <li><b>oven_state</b> (aus|brennt|speichert), <b>oven_insert</b>, <b>oven_tiles</b>, <b>oven_since</b>, <b>oven_prev_&lt;thermostat&gt;</b></li>
     <li><b>clima_state</b>, <b>clima_info</b>, <b>clima_valve_avg</b>, <b>clima_starts_today</b>, <b>powerOutage</b></li>
-    <li><b>sun_forecast</b>, <b>sun_planned</b>, <b>sun_active</b>, <b>sun_base</b>, <b>season</b>, <b>season_count</b>, <b>season_info</b></li>
+    <li><b>sun_forecast</b>, <b>sun_planned</b>, <b>sun_active</b>, <b>sun_base</b>, <b>season</b>, <b>season_count</b>, <b>season_info</b>, <b>rampe_info</b>, <b>rampe_today</b></li>
     <li><b>last_action</b>, <b>sim_&lt;regel&gt;</b>; versteckt <b>.samples</b> (Messwerte für den Neustart)</li>
   </ul>
 </ul>

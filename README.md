@@ -16,6 +16,7 @@ Raumsensoren, PV-Inselanlage, Klimagerät, Kachelofen.
 | `ofen` | v0.2.0 | Stahleinsatz > 60 °C → „brennt“, Kacheln > 35 °C → „speichert“ (2 K Hysterese). Dann Wohnzimmer, Gästezimmer, Bad Altbau auf 17 °C; vorher `auto` oder Wert wird gemerkt und danach wiederhergestellt – aber nur, wenn noch 17 °C eingestellt sind (Nutzeränderungen bleiben). |
 | `sonne` | v0.4.0 | Ab 06:00 Tagesplan: ist für 09–15 Uhr laut `Forecast` (SolarForecast, `Today_HourHH_PVforecast`) mindestens 8 kWh PV angesagt und mittags (`rem_DWD:fc0_12_TTT`) mindestens 3 °C, wird die Feineinstellung im Fenster um eine Stufe gesenkt und danach auf den Ausgangswert zurückgestellt. |
 | `saison` | v0.4.0 | Täglich mit der Auswertung: liegt das Tagesmittel der DWD-Prognose (`fc0_Tx`/`fc0_Tn`) 3 Tage in Folge unter 12 °C → alle Thermostate auf `auto` (Wochenplan); 3 Tage über 16 °C → auf `off` (wie im Sommer von Hand, schont die Batterien). Schaltet mit 20 s Abstand. |
+| `rampe` | v0.8.0 | Zwischenwert `hmRampMinutes` (30) vor einem Profilsprung nach oben ≥ `hmRampMinDelta` (1,5 K): `desiredTemperature auto <Mittel>`, ein Funkbefehl, Thermostat bleibt auf `auto`. Siehe „Neu in v0.8.0“. |
 
 ## Installation
 
@@ -38,6 +39,21 @@ rechnet und schreibt, was es tun würde (`sim_curve`, `sim_standby`,
 **Achtung beim Scharfschalten der Regel `standby`:** eine bestehende eigene
 Standby-Logik (z. B. ein notify auf die Ventilstellungen) vorher deaktivieren,
 sonst schalten zwei Logiken gegeneinander.
+
+### Neu in v0.8.0
+
+- **Regel `rampe`:** Steht im Wochenprofil eines Thermostats in `hmRampMinutes`
+  (30) ein Sprung nach oben um mindestens `hmRampMinDelta` (1,5 K) an, setzt das
+  Modul vorher den Zwischenwert mit `desiredTemperature auto <Mittel>`
+  (19 -> 21: um 06:00 auf 20, ab 06:30 wieder Profil). Ein Funkbefehl je
+  Thermostat, es bleibt im Automatikbetrieb. Nur Thermostate auf `auto`, deren
+  Soll gerade dem Profil entspricht; mehrere Befehle im Abstand von 15 s.
+  Startet wie jede neue Regel in der Simulation (`sim_rampe`, `rampe_info`).
+- **Klima:** aus, wenn das Ventilmittel des Klima-Raums nach der Mindestlaufzeit
+  unter `hmClimaStopValve` (10 %) liegt; kein Start bzw. sofort aus, wenn
+  niemand zu Hause ist (`hmClimaPresence`, Standard `irgendwer:anwesend:on`,
+  `none` = aus); kein Start in der Aufheizphase nach einem Sollwertsprung und
+  wenn das Profil des Klima-Raums innerhalb der Mindestlaufzeit absenkt.
 
 ## Bedienung
 
