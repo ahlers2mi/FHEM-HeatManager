@@ -41,6 +41,12 @@ rechnet und schreibt, was es tun würde (`sim_curve`, `sim_standby`,
 Standby-Logik (z. B. ein notify auf die Ventilstellungen) vorher deaktivieren,
 sonst schalten zwei Logiken gegeneinander.
 
+### Neu in v0.9.1
+
+- Hilfe (`help HeatManager`) neu gegliedert: Übersicht der Regeln, dann je Regel
+  eine Tabelle Attribut / Standard / Bedeutung. Test `t/15_doku.t` prüft, dass
+  jedes Attribut dokumentiert ist. Keine Funktionsänderung.
+
 ### Neu in v0.9.0
 
 - **Regel `tag` (Nachregelung tagsüber):** Die Heizkurve wird sonst nur einmal
