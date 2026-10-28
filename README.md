@@ -17,6 +17,7 @@ Raumsensoren, PV-Inselanlage, Klimagerät, Kachelofen.
 | `sonne` | v0.4.0 | Ab 06:00 Tagesplan: ist für 09–15 Uhr laut `Forecast` (SolarForecast, `Today_HourHH_PVforecast`) mindestens 8 kWh PV angesagt und mittags (`rem_DWD:fc0_12_TTT`) mindestens 3 °C, wird die Feineinstellung im Fenster um eine Stufe gesenkt und danach auf den Ausgangswert zurückgestellt. |
 | `saison` | v0.4.0 | Täglich mit der Auswertung: liegt das Tagesmittel der DWD-Prognose (`fc0_Tx`/`fc0_Tn`) 3 Tage in Folge unter 12 °C → alle Thermostate auf `auto` (Wochenplan); 3 Tage über 16 °C → auf `off` (wie im Sommer von Hand, schont die Batterien). Schaltet mit 20 s Abstand. |
 | `rampe` | v0.8.0 | Zwischenwert `hmRampMinutes` (30) vor einem Profilsprung nach oben ≥ `hmRampMinDelta` (1,5 K): `desiredTemperature auto <Mittel>`, ein Funkbefehl, Thermostat bleibt auf `auto`. Siehe „Neu in v0.8.0“. |
+| `tag` | v0.9.0 | Nachregelung tagsüber: stündlich 07–21 Uhr; Ventile seit 120 min überwiegend über 50 % offen und mindestens 2 Räume 0,8 K unter Soll → Feineinstellung +1, höchstens 2 Stufen pro Tag, nur nach oben. Startet simuliert (`hmSimOnly`). Siehe „Neu in v0.9.0“. |
 
 ## Installation
 
@@ -25,7 +26,7 @@ update add https://raw.githubusercontent.com/ahlers2mi/FHEM-HeatManager/main/con
 update all
 reload 98_HeatManager
 define heizung HeatManager
-attr heizung hmRoomSensors MAX_040549:Mobil5data MAX_0404d9:Mobil1data MAX_06e2ff:Mobil6data
+attr heizung hmRoomSensors MAX_040549:Mobil5data MAX_0404d9:Mobil1data MAX_06e31a:Mobil6data
 attr heizung hmIgnore MAX_0423d1
 ```
 
@@ -39,6 +40,30 @@ rechnet und schreibt, was es tun würde (`sim_curve`, `sim_standby`,
 **Achtung beim Scharfschalten der Regel `standby`:** eine bestehende eigene
 Standby-Logik (z. B. ein notify auf die Ventilstellungen) vorher deaktivieren,
 sonst schalten zwei Logiken gegeneinander.
+
+### Neu in v0.9.0
+
+- **Regel `tag` (Nachregelung tagsüber):** Die Heizkurve wird sonst nur einmal
+  täglich (`hmCheckTime`) angepasst. Nach einer Umstellung am Regler oder bei
+  einem Kälteeinbruch ist das zu träge. Stündlich im Fenster `hmDayTimes`
+  (07:00-21:00) wird geprüft: Ventile in mindestens 80 % der Messungen der
+  letzten `hmDayMinutes` (120) über `hmDayValve` (50 %) und mindestens
+  `hmDayColdRooms` (2) Räume `hmDayColdDelta` (0,8 K) unter Soll (Raumsensor,
+  sonst Thermostatfühler) → Feineinstellung +1. Höchstens `hmDayMaxSteps` (2)
+  Stufen pro Tag, Abstand mindestens `hmDayMinutes`, nie über `hmFineMax`.
+  Nur nach oben; abgesenkt wird weiter nur in der Tagesauswertung.
+  Nicht während Aufheizphase, Ofen, Klima, Sonnenabsenkung, Bedienung am
+  Regler (`HumanAccess`), Standby oder Abwesenheit (`hmClimaPresence`).
+  Readings `day_info`, `day_valve`, `day_cold`, `day_steps_today`.
+- **`hmCurveRooms`:** nur diese Thermostate gehen in das Ventilmittel der Regeln
+  `curve` und `tag` ein (leer = alle). Räume, die absichtlich kühl laufen
+  (Schlafzimmer, Gästebad mit 12 °C), haben fast immer Ventil 0 und drücken
+  sonst das Mittel – die Kurve sänke, obwohl die Wohnräume Wärme brauchen.
+  „Zu kalt“, das höchste Ventil, Standby und Klima sehen weiter alle Räume.
+- **`hmSimOnly`** (Default `tag`): Regeln, die auch bei `hmSimulate 0` nur
+  simulieren, bis sie in `hmLive` stehen (`none` = keine). So startet eine neue
+  Regel auch auf einer scharf geschalteten Anlage zuerst in der Simulation.
+  Scharf schalten: `attr heizung hmLive …,tag`.
 
 ### Neu in v0.8.0
 

@@ -42,6 +42,14 @@
 #     das Thermostat bleibt im Automatikbetrieb und folgt ab dem Schaltpunkt
 #     wieder dem Profil). Die Ventile öffnen dadurch nicht alle gleichzeitig
 #     weit, was die Klima-Regel morgens unnötig auslösen kann.
+#   * tag: Nachregelung tagsüber. Die Heizkurve wird sonst nur einmal täglich
+#     angepasst; nach einer Umstellung am Regler oder bei einem Kälteeinbruch
+#     ist das zu träge. Stündlich im Fenster hmDayTimes: Ventile im Mittel
+#     seit hmDayMinutes über hmDayValve und mindestens hmDayColdRooms Räume
+#     hmDayColdDelta unter Soll -> Feineinstellung eine Stufe rauf, höchstens
+#     hmDayMaxSteps Stufen pro Tag. Nur nach oben (Komfort); abgesenkt wird
+#     weiter nur bei der Tagesauswertung. Nicht bei Aufheizphase, Ofen, Klima,
+#     Sonnenabsenkung, Bedienung am Regler, Standby, Abwesenheit.
 #
 # Standard ist der Simulationsmodus (hmSimulate 1): das Modul misst, rechnet
 # und schreibt in Readings (sim_<regel>, last_action), was es tun würde, schaltet
@@ -53,7 +61,7 @@
 # keine eigene Hardware.
 #
 # Autor:    ahlers2mi
-# Version:  v0.8.0
+# Version:  v0.9.0
 # Lizenz:   GPL v2 oder höher (wie FHEM)
 ##############################################################################
 
@@ -69,15 +77,16 @@ use JSON::PP ();
 # Von fhem.pl bereitgestellte Globals.
 use vars qw($init_done %defs %attr $readingFnAttributes);
 
-my $HM_VERSION = "0.8.0";
+my $HM_VERSION = "0.9.0";
 
 # Voreinstellungen aller Attribute. Sie passen zur Anlage des Autors und lassen
 # sich einzeln per attr überschreiben; HeatManager_A liest Attribut oder Default.
 my %HM_defaults = (
     # --- allgemein ---
     hmSimulate          => 1,                                   # 1 = nur rechnen und protokollieren
-    hmRules             => "curve,standby,klima,ofen,sonne,saison,rampe", # aktive Regeln
+    hmRules             => "curve,standby,klima,ofen,sonne,saison,rampe,tag", # aktive Regeln
     hmLive              => "",                                  # Regeln, die trotz hmSimulate 1 echt schalten
+    hmSimOnly           => "tag",                               # Regeln, die immer simulieren (neue Regeln), außer sie stehen in hmLive; none = keine
     hmSampleInterval    => 300,                                 # Messintervall in s (min. 60)
     hmNotifyCmd         => "",                                  # FHEM-Befehl für Meldungen, $MSG wird ersetzt
     hmOutdoorSensor     => "Mobil3data:temperature",            # Außentemperatur
@@ -86,6 +95,7 @@ my %HM_defaults = (
     hmThermostats       => "type=HeatingThermostat",            # devspec der Heizkörperthermostate
     hmIgnore            => "",                                  # nie bewerten (z. B. Keller)
     hmRoomSensors       => "",                                  # Thermostat:Raumsensor[:Reading]
+    hmCurveRooms        => "",                                  # nur diese Thermostate zählen für das Ventilmittel (leer = alle)
     # --- Wärmeerzeuger ---
     hmHeater            => "mySolvis",                          # SolvisClient-Gerät
     hmFineReading       => "C15.TemperaturFeineinstellung_HK2", # Feineinstellung der Heizkurve
@@ -154,6 +164,13 @@ my %HM_defaults = (
     hmRampMinutes       => 30,                                  # so lange vor dem Profilsprung Zwischenwert
     hmRampMinDelta      => 1.5,                                 # K, kleinere Sprünge nicht abstufen
     hmRampRooms         => "",                                  # leer = alle Thermostate (ohne hmIgnore)
+    # --- Regel tag (Nachregelung tagsüber) ---
+    hmDayTimes          => "07:00-21:00",                       # Zeitfenster der stündlichen Prüfung
+    hmDayValve          => 50,                                  # Ventilmittel % ...
+    hmDayMinutes        => 120,                                 # ... seit so vielen Minuten (auch Mindestabstand zwischen Stufen)
+    hmDayColdDelta      => 0.8,                                 # K unter Soll gilt als zu kalt
+    hmDayColdRooms      => 2,                                   # so viele Räume müssen zu kalt sein
+    hmDayMaxSteps       => 2,                                   # höchstens so viele Stufen pro Tag
 );
 
 # ----------------------------------------------------------------------------
@@ -173,11 +190,12 @@ sub HeatManager_Initialize {
     $hash->{AttrList} =
           "disable:0,1 "
         . "hmSimulate:1,0 "
-        . "hmRules:multiple-strict,curve,standby,klima,ofen,sonne,saison,rampe "
-        . "hmLive:multiple-strict,curve,standby,klima,ofen,sonne,saison,rampe "
+        . "hmRules:multiple-strict,curve,standby,klima,ofen,sonne,saison,rampe,tag "
+        . "hmLive:multiple-strict,curve,standby,klima,ofen,sonne,saison,rampe,tag "
+        . "hmSimOnly "
         . "hmSampleInterval hmNotifyCmd:textField-long hmOutdoorSensor hmFlowSensor "
         # --- Thermostate / Räume ---
-        . "hmThermostats hmIgnore hmRoomSensors:textField-long "
+        . "hmThermostats hmIgnore hmRoomSensors:textField-long hmCurveRooms "
         # --- Wärmeerzeuger ---
         . "hmHeater hmFineReading hmModeReading "
         # --- curve ---
@@ -200,6 +218,8 @@ sub HeatManager_Initialize {
         . "hmSeasonForecast hmSeasonOn hmSeasonOff hmSeasonDays "
         # --- rampe ---
         . "hmRampMinutes hmRampMinDelta hmRampRooms "
+        # --- tag ---
+        . "hmDayTimes hmDayValve hmDayMinutes hmDayColdDelta hmDayColdRooms hmDayMaxSteps "
         . $readingFnAttributes;
     return undef;
 }
@@ -225,12 +245,16 @@ sub HeatManager_RuleOn {
 # ----------------------------------------------------------------------------
 # HeatManager_Sim
 #   Simuliert diese Regel? Ja, wenn hmSimulate 1 und die Regel nicht in
-#   hmLive steht. hmSimulate 0 schaltet alle Regeln scharf.
+#   hmLive steht. hmSimulate 0 schaltet alle Regeln scharf - außer denen in
+#   hmSimOnly (neue Regeln, Default "tag"): die simulieren immer, bis sie in
+#   hmLive eingetragen sind.
 # ----------------------------------------------------------------------------
 sub HeatManager_Sim {
     my ($name, $rule) = @_;
+    my $live = (grep { $_ eq $rule } split(/,/, HeatManager_A($name, "hmLive"))) ? 1 : 0;
+    return 1 if (!$live && grep { $_ eq $rule } split(/[\s,]+/, HeatManager_A($name, "hmSimOnly") // ""));
     return 0 if (!HeatManager_A($name, "hmSimulate"));
-    return (grep { $_ eq $rule } split(/,/, HeatManager_A($name, "hmLive"))) ? 0 : 1;
+    return $live ? 0 : 1;
 }
 
 # ----------------------------------------------------------------------------
@@ -406,6 +430,19 @@ sub HeatManager_SensorMap {
         $m{$t} = [$d, $r // "temperature"];
     }
     return \%m;
+}
+
+# ----------------------------------------------------------------------------
+# HeatManager_CurveSet
+#   hmCurveRooms als Hash (leer = undef, dann zählen alle Räume). Räume, die
+#   absichtlich kühl laufen (Schlafzimmer, Bad mit 12 °C), haben fast immer
+#   Ventil 0 und ziehen sonst das Mittel nach unten - die Kurve sänke, obwohl
+#   die Wohnräume Wärme brauchen.
+# ----------------------------------------------------------------------------
+sub HeatManager_CurveSet {
+    my ($name) = @_;
+    my @r = split(/[\s,]+/, HeatManager_A($name, "hmCurveRooms") // "");
+    return @r ? { map { $_ => 1 } @r } : undef;
 }
 
 # ----------------------------------------------------------------------------
@@ -616,6 +653,7 @@ sub HeatManager_SampleRun {
     HeatManager_Standby($hash, $avg) if (HeatManager_RuleOn($name, "standby"));
     HeatManager_Clima($hash, $hash->{helper}{valveNow}{HeatManager_A($name, "hmClimaRoom")})
         if (HeatManager_RuleOn($name, "klima"));
+    HeatManager_Day($hash, \%excl, \%ramp, $oven, $acHeat) if (HeatManager_RuleOn($name, "tag"));
     return undef;
 }
 
@@ -688,6 +726,130 @@ sub HeatManager_RampeQueue {
     } else {
         delete $hash->{helper}{rampBusy};
     }
+    return undef;
+}
+
+# ============================================================================
+# Regel tag (Nachregelung tagsüber)
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# HeatManager_DayCold
+#   Räume, die jetzt mindestens hmDayColdDelta unter ihrem Soll liegen.
+#   Gemessen mit dem Raumsensor (hmRoomSensors), sonst mit dem Fühler des
+#   Thermostats - der sitzt am Heizkörper und misst eher zu warm, ein "zu kalt"
+#   von dort ist also eher zu vorsichtig als zu früh. Ausgenommen: Räume ohne
+#   Zahlen-Sollwert, in der Aufheizphase und solche, die Ofen/Klima mitheizen.
+#   Liefert eine Liste "Thermostat ist/soll".
+# ----------------------------------------------------------------------------
+sub HeatManager_DayCold {
+    my ($name, $excl, $ramp) = @_;
+    my $smap = HeatManager_SensorMap($name);
+    my $cd   = HeatManager_A($name, "hmDayColdDelta");
+    my @cold;
+    foreach my $t (HeatManager_Thermostats($name)) {
+        next if ($excl->{$t} || $ramp->{$t});
+        my $des = ReadingsVal($t, "desiredTemperature", "off");
+        next if ($des !~ /^\d+(?:\.\d+)?$/);
+        my $temp = $smap->{$t}
+                 ? ReadingsVal($smap->{$t}[0], $smap->{$t}[1], undef)
+                 : ReadingsVal($t, "temperature", undef);
+        next if (!defined($temp) || $temp !~ /^-?\d+(?:\.\d+)?$/);
+        push @cold, sprintf("%s %.1f/%.1f", $t, $temp, $des) if ($temp <= $des - $cd + 1e-9);
+    }
+    return @cold;
+}
+
+# ----------------------------------------------------------------------------
+# HeatManager_Day
+#   Stündlich (aus der Messung) im Fenster hmDayTimes: Ventile seit
+#   hmDayMinutes überwiegend (80 % der Messungen) über hmDayValve und
+#   mindestens hmDayColdRooms Räume zu kalt -> Feineinstellung +1.
+#   Höchstens hmDayMaxSteps Stufen pro Tag, Abstand zwischen zwei Stufen
+#   mindestens hmDayMinutes. Nur nach oben; das Absenken bleibt der
+#   Tagesauswertung (curve) überlassen, damit tagsüber nichts pendelt.
+#   Readings: day_info, day_valve, day_cold, day_steps_today/_day, day_last_step.
+# ----------------------------------------------------------------------------
+sub HeatManager_Day {
+    my ($hash, $excl, $ramp, $oven, $acHeat) = @_;
+    my $name = $hash->{NAME};
+    my $now  = time();
+    return undef if ($now - ($hash->{helper}{dayCheck} // 0) < 3600 - 30);   # stündlich
+    $hash->{helper}{dayCheck} = $now;
+
+    my $heater = HeatManager_A($name, "hmHeater");
+    my $rd     = HeatManager_A($name, "hmFineReading");
+    my $cur    = ReadingsVal($heater, $rd, undef);
+    my @lt     = localtime($now);
+    my $day    = sprintf("%04d-%02d-%02d", $lt[5] + 1900, $lt[4] + 1, $lt[3]);
+    my $steps  = ReadingsVal($name, "day_steps_day", "") eq $day ? ReadingsVal($name, "day_steps_today", 0) : 0;
+    my $win    = HeatManager_A($name, "hmDayMinutes") * 60;
+    my $iv     = HeatManager_A($name, "hmSampleInterval");
+    $iv = 60 if ($iv < 60);
+    my $thr    = HeatManager_A($name, "hmDayValve");
+
+    # Ventile: Mittel je Messung über die gewerteten Räume
+    my ($tot, $hi, $sum) = (0, 0, 0);
+    foreach my $smp (grep { $now - $_->{t} <= $win } @{$hash->{helper}{samples} // []}) {
+        my $cset = HeatManager_CurveSet($name);
+        my @v = map { $smp->{valve}{$_} } grep { !$cset || $cset->{$_} } keys %{$smp->{valve} // {}};
+        next if (!@v);
+        my $a = 0; $a += $_ for @v; $a /= @v;
+        $tot++; $sum += $a; $hi++ if ($a >= $thr);
+    }
+    my $mean = $tot ? $sum / $tot : 0;
+    my @cold = HeatManager_DayCold($name, $excl, $ramp);
+
+    my $info;
+    if (!HeatManager_InWindow(HeatManager_A($name, "hmDayTimes"))) {
+        $info = "außerhalb " . HeatManager_A($name, "hmDayTimes");
+    } elsif (!HeatManager_Present($name)) {
+        $info = "niemand zu Hause";
+    } elsif (ReadingsVal($heater, "HumanAccess", "none") ne "none") {
+        $info = "Regler wird bedient";
+    } elsif (ReadingsVal($heater, HeatManager_A($name, "hmModeReading"), "") eq HeatManager_A($name, "hmStandbyModeOn")) {
+        $info = "Heizkreis im Standby";
+    } elsif (($oven // "aus") ne "aus") {
+        $info = "Ofen $oven";
+    } elsif ($acHeat) {
+        $info = "Klima heizt";
+    } elsif (ReadingsVal($name, "sun_active", "off") eq "on") {
+        $info = "Sonnenabsenkung aktiv";
+    } elsif (HeatManager_PowerOutage($name)) {
+        $info = "Stromausfall";
+    } elsif (!defined($cur) || $cur !~ /^-?\d+$/) {
+        $info = "Feineinstellung $heater:$rd nicht lesbar";
+    } elsif ($tot < 0.8 * $win / $iv) {
+        $info = sprintf("zu wenig Messwerte (%d)", $tot);
+    } elsif ($hi < 0.8 * $tot) {
+        $info = sprintf("ok, Ventile %.0f %% (Schwelle %s %%)", $mean, $thr);
+    } elsif (@cold < HeatManager_A($name, "hmDayColdRooms")) {
+        $info = sprintf("Ventile %.0f %%, aber nur %d Raum zu kalt", $mean, scalar(@cold));
+    } elsif ($steps >= HeatManager_A($name, "hmDayMaxSteps")) {
+        $info = "Tageslimit $steps Stufen erreicht";
+    } elsif ($now - ReadingsVal($name, "day_last_step", 0) < $win) {
+        $info = "wartet nach der letzten Stufe";
+    } elsif ($cur >= HeatManager_A($name, "hmFineMax")) {
+        $info = "Grenze hmFineMax erreicht";
+    }
+
+    readingsBeginUpdate($hash);
+    readingsBulkUpdate($hash, "day_valve", sprintf("%.1f", $mean));
+    readingsBulkUpdate($hash, "day_cold",  @cold ? join(", ", @cold) : "none");
+    readingsBulkUpdate($hash, "day_info",  sprintf("%02d:%02d %s", $lt[2], $lt[1], $info)) if (defined($info));
+    readingsEndUpdate($hash, 1);
+    return undef if (defined($info));
+
+    my $target = $cur + 1;
+    my $why    = sprintf("Ventile %.0f %% seit %d min, zu kalt: %s", $mean, $win / 60, join(", ", @cold));
+    readingsBeginUpdate($hash);
+    readingsBulkUpdate($hash, "day_info",        sprintf("%02d:%02d %s %s -> %s (%s)", $lt[2], $lt[1], $rd, $cur, $target, $why));
+    readingsBulkUpdate($hash, "day_steps_today", $steps + 1);
+    readingsBulkUpdate($hash, "day_steps_day",   $day);
+    readingsBulkUpdate($hash, "day_last_step",   $now);
+    readingsEndUpdate($hash, 1);
+    HeatManager_Do($hash, "set $heater $rd $target", "tag", "Heizkurve tagsueber $rd $cur -> $target ($why)");
+    HeatManager_VerifyLater($hash, $heater, $rd, $target, 1) if (!HeatManager_Sim($name, "tag"));
     return undef;
 }
 
@@ -796,8 +958,9 @@ sub HeatManager_Evaluate {
     # Mittel je Raum, dann über alle Räume; dazu Raum mit höchstem Ventil
     # und Raum, der am längsten zu kalt war
     my %vavg = map { $_ => $vsum{$_} / $vn{$_} } keys %vsum;
+    my $cset = HeatManager_CurveSet($name);                # hmCurveRooms (v0.9.0)
     my ($all, $cnt) = (0, 0);
-    foreach (keys %vavg) { $all += $vavg{$_}; $cnt++; }
+    foreach (keys %vavg) { next if ($cset && !$cset->{$_}); $all += $vavg{$_}; $cnt++; }
     my $avg = $cnt ? $all / $cnt : 0;
     my ($maxRoom)  = sort { $vavg{$b} <=> $vavg{$a} } keys %vavg;
     my ($coldRoom) = sort { $cmin{$b} <=> $cmin{$a} } keys %cmin;
@@ -1442,6 +1605,8 @@ sub HeatManager_Get {
             . (ReadingsVal($name, "sun_active", "off") eq "on" ? " (aktiv)" : ""),
         "Saison:           " . ReadingsVal($name, "season_info", "-"),
         "Rampe:            " . ReadingsVal($name, "rampe_info", "-"),
+        "Tagsueber:        " . ReadingsVal($name, "day_info", "-")
+            . (HeatManager_Sim($name, "tag") ? " (Simulation)" : ""),
         "Ausgenommen:      " . ReadingsVal($name, "excluded_rooms", "none"));
 }
 
@@ -1449,8 +1614,8 @@ sub HeatManager_Get {
 
 =pod
 =item device
-=item summary    Heizungsoptimierung: Heizkurve, Standby, Klima, Kachelofen, Sonne, Saison
-=item summary_DE Heizungsoptimierung: Heizkurve, Standby, Klima, Kachelofen, Sonne, Saison
+=item summary    Heizungsoptimierung: Heizkurve, Standby, Klima, Kachelofen, Sonne, Saison, Rampe, Nachregelung
+=item summary_DE Heizungsoptimierung: Heizkurve, Standby, Klima, Kachelofen, Sonne, Saison, Rampe, Nachregelung
 =begin html
 
 <a id="HeatManager"></a>
@@ -1489,10 +1654,11 @@ sub HeatManager_Get {
   <b>Attribute</b>
   <ul>
     <li><a id="HeatManager-attr-hmSimulate"></a><b>hmSimulate</b> 1|0 &ndash; Simulation (Default 1)</li>
-    <li><a id="HeatManager-attr-hmRules"></a><b>hmRules</b> &ndash; aktive Regeln: curve, standby, klima, ofen, sonne, saison</li>
+    <li><a id="HeatManager-attr-hmRules"></a><b>hmRules</b> &ndash; aktive Regeln: curve, standby, klima, ofen, sonne, saison, rampe, tag</li>
     <li><a id="HeatManager-attr-hmLive"></a><b>hmLive</b> &ndash; Regeln, die trotz <code>hmSimulate 1</code> echt schalten (einzeln scharf schalten), z.B. <code>ofen,saison</code>. Default leer.</li>
     <li><a id="HeatManager-attr-hmThermostats"></a><b>hmThermostats</b> &ndash; devspec der Thermostate (type=HeatingThermostat)</li>
     <li><a id="HeatManager-attr-hmIgnore"></a><b>hmIgnore</b> &ndash; auszunehmende Thermostate</li>
+    <li><a id="HeatManager-attr-hmCurveRooms"></a><b>hmCurveRooms</b> &ndash; Thermostate, deren Ventile in das Ventilmittel der Regeln curve und tag eingehen (leer = alle). Für Räume, die absichtlich kühl laufen und sonst das Mittel drücken. &bdquo;Zu kalt&ldquo;, das höchste Ventil, Standby und Klima sehen weiter alle Räume.</li>
     <li><a id="HeatManager-attr-hmRoomSensors"></a><b>hmRoomSensors</b> &ndash; Thermostat:Sensor[:Reading], z. B. <code>MAX_040549:Mobil5data</code>; nur diese Räume können als &bdquo;zu kalt&ldquo; gelten</li>
     <li><b>hmHeater</b>, <b>hmFineReading</b>, <b>hmModeReading</b> &ndash; Wärmeerzeuger und dessen Readings</li>
     <li><b>hmFineMin</b>/<b>hmFineMax</b> (-3/2), <b>hmCheckTime</b> (05:00), <b>hmValveLow</b>/<b>hmValveHigh</b> (10/60 %),
@@ -1508,6 +1674,8 @@ sub HeatManager_Get {
         <b>hmSunTempReading</b> (rem_DWD:fc0_12_TTT), <b>hmSunMinTemp</b> (3), <b>hmSunStep</b> (1) &ndash; Regel sonne</li>
     <li><a id="HeatManager-attr-hmRampMinutes"></a><b>hmRampMinutes</b> (30), <b>hmRampMinDelta</b> (1.5), <b>hmRampRooms</b> (leer = alle) &ndash; Regel rampe: so lange vor einem Profilsprung nach oben wird der Zwischenwert mit <code>desiredTemperature auto &lt;Mittel&gt;</code> gesetzt (ein Funkbefehl, Thermostat bleibt im Automatikbetrieb)</li>
     <li><a id="HeatManager-attr-hmClimaStopValve"></a><b>hmClimaStopValve</b> (10 %) &ndash; Klima aus, wenn das Ventilmittel des Klima-Raums nach der Mindestlaufzeit darunter liegt; <b>hmClimaPresence</b> (irgendwer:anwesend:on, <code>none</code> = aus) &ndash; Gerät:Reading:Regex, niemand zu Hause -> kein Start, laufende Klima aus. Außerdem kein Start in der Aufheizphase nach einem Sollwertsprung (hmRampIgnore) und wenn das Profil des Klima-Raums innerhalb der Mindestlaufzeit absenkt.</li>
+    <li><a id="HeatManager-attr-hmDayTimes"></a><b>hmDayTimes</b> (07:00-21:00), <b>hmDayValve</b> (50 %), <b>hmDayMinutes</b> (120), <b>hmDayColdDelta</b> (0.8 K), <b>hmDayColdRooms</b> (2), <b>hmDayMaxSteps</b> (2) &ndash; Regel tag: stündlich im Fenster prüfen; sind die Ventile seit hmDayMinutes überwiegend über hmDayValve offen und mindestens hmDayColdRooms Räume hmDayColdDelta unter Soll (Raumsensor, sonst Thermostatfühler), Feineinstellung +1. Höchstens hmDayMaxSteps Stufen pro Tag, Abstand mindestens hmDayMinutes, nur nach oben. Nicht bei Aufheizphase, Ofen, Klima, Sonnenabsenkung, Bedienung am Regler (HumanAccess), Standby, Abwesenheit (hmClimaPresence).</li>
+    <li><a id="HeatManager-attr-hmSimOnly"></a><b>hmSimOnly</b> (tag) &ndash; Regeln, die auch bei <code>hmSimulate 0</code> nur simulieren, bis sie in <b>hmLive</b> stehen; <code>none</code> = keine</li>
     <li><b>hmSeasonForecast</b> (rem_DWD), <b>hmSeasonOn</b> (12), <b>hmSeasonOff</b> (16), <b>hmSeasonDays</b> (3) &ndash; Regel saison:
         Thermostate auf <code>auto</code> bzw. <code>off</code></li>
     <li><a id="HeatManager-attr-hmFlowSensor"></a><b>hmFlowSensor</b> &ndash; Vorlauftemperatur als Gerät:Reading (Default <code>mySolvis:S12.Vorlauftemperatur_HK1</code>, <code>none</code> = aus). Nur Anzeige: Readings <code>flow_*</code> und Zusatz in <code>decision</code>, keine Regel nutzt den Wert. Werte außerhalb 0&ndash;120 °C werden verworfen.</li>
@@ -1524,6 +1692,7 @@ sub HeatManager_Get {
     <li><b>oven_state</b> (aus|brennt|speichert), <b>oven_insert</b>, <b>oven_tiles</b>, <b>oven_since</b>, <b>oven_prev_&lt;thermostat&gt;</b></li>
     <li><b>clima_state</b>, <b>clima_info</b>, <b>clima_valve_avg</b>, <b>clima_starts_today</b>, <b>powerOutage</b></li>
     <li><b>sun_forecast</b>, <b>sun_planned</b>, <b>sun_active</b>, <b>sun_base</b>, <b>season</b>, <b>season_count</b>, <b>season_info</b>, <b>rampe_info</b>, <b>rampe_today</b></li>
+    <li><b>day_info</b>, <b>day_valve</b>, <b>day_cold</b>, <b>day_steps_today</b>, <b>day_last_step</b> &ndash; Regel tag</li>
     <li><b>last_action</b>, <b>sim_&lt;regel&gt;</b>; versteckt <b>.samples</b> (Messwerte für den Neustart)</li>
   </ul>
 </ul>
