@@ -18,6 +18,7 @@ Raumsensoren, PV-Inselanlage, Klimagerät, Kachelofen.
 | `saison` | v0.4.0 | Täglich mit der Auswertung: liegt das Tagesmittel der DWD-Prognose (`fc0_Tx`/`fc0_Tn`) 3 Tage in Folge unter 12 °C → alle Thermostate auf `auto` (Wochenplan); 3 Tage über 16 °C → auf `off` (wie im Sommer von Hand, schont die Batterien). Schaltet mit 20 s Abstand. |
 | `rampe` | v0.8.0 | Zwischenwert `hmRampMinutes` (30) vor einem Profilsprung nach oben ≥ `hmRampMinDelta` (1,5 K): `desiredTemperature auto <Mittel>`, ein Funkbefehl, Thermostat bleibt auf `auto`. Siehe „Neu in v0.8.0“. |
 | `tag` | v0.9.0 | Nachregelung tagsüber: stündlich 07–21 Uhr; Ventile seit 120 min überwiegend über 50 % offen und mindestens 2 Räume 0,8 K unter Soll → Feineinstellung +1, höchstens 2 Stufen pro Tag, nur nach oben. Startet simuliert (`hmSimOnly`). Siehe „Neu in v0.9.0“. |
+| `frost` | v0.10.0 | Grundtemperatur für einen Heizkreis, der sonst in Standby steht (leere Wohnung): Raumsensor `hmFrostSensor` unter 12 °C → Heizkreis auf `Tag`, ab 14 °C zurück auf `Standby`. Schaltet nur aus `Standby` ein und nur selbst Eingeschaltetes zurück. Sensorwert älter 2 h → melden, nichts schalten; älter 24 h → Notbetrieb `Nacht`. Ohne `hmFrostSensor` aus; schaltet nur, wenn `frost` in `hmLive` steht. Siehe „Neu in v0.10.0“. |
 
 ## Installation
 
@@ -40,6 +41,29 @@ rechnet und schreibt, was es tun würde (`sim_curve`, `sim_standby`,
 **Achtung beim Scharfschalten der Regel `standby`:** eine bestehende eigene
 Standby-Logik (z. B. ein notify auf die Ventilstellungen) vorher deaktivieren,
 sonst schalten zwei Logiken gegeneinander.
+
+### Neu in v0.10.1
+
+- Attributhilfe in FHEMWEB repariert: seit v0.9.1 standen die Attribute in Tabellen;
+  FHEMWEB zeigt die Beschreibung unter dem `attr`-Dropdown aber nur, wenn der Anker
+  in einem `<li>` steht. Jetzt wieder Listen (Attribut – Bedeutung, Standard).
+  `t/15_doku.t` prüft das.
+
+### Neu in v0.10.0
+
+- **Regel `frost`:** gedacht für HK1 (OG, im Umbau, Standby). Der Frostschutz des
+  Reglers greift nur über die Außentemperatur; die Regel hält stattdessen eine
+  Grundtemperatur im Raum. Attribute: `hmFrostSensor` (Gerät:Reading, leer = aus),
+  `hmFrostModeReading` (`C06.Anlagenmodus_HK1`), `hmFrostOn` (12) / `hmFrostOff` (14),
+  `hmFrostModeHeat` (`Tag`) / `hmFrostModeIdle` (`Standby`), `hmFrostMaxAge` (120 min),
+  `hmFrostFailAge` (1440 min) / `hmFrostModeFail` (`Nacht`). Readings `frost_state`
+  (aus/heizt/notbetrieb), `frost_temp`, `frost_info`, `frost_since`.
+- Neue Regeln, die bei bestehenden Installationen dazukommen, schalten nur, wenn
+  sie in `hmLive` stehen – auch bei `hmSimulate 0` und `hmSimOnly none`.
+- Beispiel (zweite Instanz für HK1):
+  `attr heizung_og hmRules curve,standby,frost`,
+  `attr heizung_og hmFrostSensor rem_LaCrosse_32:temperature`, `attr heizung_og hmLive frost`.
+  Läuft dort `standby` einmal scharf, schalten beide Regeln auf dasselbe Reading.
 
 ### Neu in v0.9.1
 
@@ -116,7 +140,10 @@ Siehe Commandref im Modul (`help HeatManager`). Die wichtigsten:
 `hmHeater`, `hmFineReading`, `hmModeReading`, `hmFineMin`/`hmFineMax`,
 `hmCheckTime`, `hmValveLow`/`hmValveHigh`, `hmColdDelta`/`hmColdMinutes`,
 `hmRampIgnore`, `hmStandbyLow`/`hmStandbyHigh`/`hmStandbyMinTime`, `hmNotifyCmd`,
-`hmFlowSensor`.
+`hmFlowSensor`, `hmFrostSensor`/`hmFrostOn`/`hmFrostOff`.
+
+In FHEMWEB steht die Beschreibung eines Attributs direkt unter der Auswahl, sobald es
+im `attr`-Dropdown gewählt wird (aus der Commandref, `help HeatManager`).
 
 Die Messwerte überstehen einen FHEM-Neustart: sie werden stündlich im versteckten
 Reading `.samples` abgelegt (landet im Statefile) und nach dem Start zurückgeholt.

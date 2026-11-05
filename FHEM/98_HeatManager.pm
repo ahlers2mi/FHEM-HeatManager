@@ -72,7 +72,7 @@
 # keine eigene Hardware.
 #
 # Autor:    ahlers2mi
-# Version:  v0.10.0
+# Version:  v0.10.1
 # Lizenz:   GPL v2 oder höher (wie FHEM)
 ##############################################################################
 
@@ -88,7 +88,7 @@ use JSON::PP ();
 # Von fhem.pl bereitgestellte Globals.
 use vars qw($init_done %defs %attr $readingFnAttributes);
 
-my $HM_VERSION = "0.10.0";
+my $HM_VERSION = "0.10.1";
 
 # Regeln, die nur echt schalten, wenn sie in hmLive stehen - unabhängig von
 # hmSimulate und hmSimOnly. Für Regeln, die bei bestehenden Installationen
@@ -1769,8 +1769,8 @@ sub HeatManager_Get {
 
 =pod
 =item device
-=item summary    Heizungsoptimierung: Heizkurve, Standby, Klima, Kachelofen, Sonne, Saison, Rampe, Nachregelung
-=item summary_DE Heizungsoptimierung: Heizkurve, Standby, Klima, Kachelofen, Sonne, Saison, Rampe, Nachregelung
+=item summary    Heizungsoptimierung: Heizkurve, Standby, Klima, Kachelofen, Sonne, Saison, Rampe, Nachregelung, Frostschutz
+=item summary_DE Heizungsoptimierung: Heizkurve, Standby, Klima, Kachelofen, Sonne, Saison, Rampe, Nachregelung, Frostschutz
 =begin html
 
 <a id="HeatManager"></a>
@@ -1819,180 +1819,254 @@ sub HeatManager_Get {
   <a id="HeatManager-attr-allgemein"></a>
   <h4>Allgemein: Simulation und Regeln</h4>
   <p>Standard ist die <b>Simulation</b>: das Modul rechnet und schreibt in <code>sim_&lt;regel&gt;</code> und <code>last_action</code>, was es tun würde, schaltet aber nichts.</p>
-    <table>
-      <tr><th align="left">Attribut</th><th align="left">Standard</th><th align="left">Bedeutung</th></tr>
-      <tr><td><a id="HeatManager-attr-hmSimulate"></a><b>hmSimulate</b></td><td><code>1</code></td><td>1 = alle Regeln nur simulieren, 0 = alle scharf (außer <code>hmSimOnly</code>)</td></tr>
-      <tr><td><a id="HeatManager-attr-hmRules"></a><b>hmRules</b></td><td><code>curve,standby,klima,ofen,sonne,saison,rampe,tag,frost</code></td><td>aktive Regeln (die anderen laufen gar nicht)</td></tr>
-      <tr><td><a id="HeatManager-attr-hmLive"></a><b>hmLive</b></td><td><code>&ndash;</code></td><td>Regeln, die trotz <code>hmSimulate 1</code> bzw. <code>hmSimOnly</code> echt schalten. <code>frost</code> schaltet <b>nur</b>, wenn es hier steht.</td></tr>
-      <tr><td><a id="HeatManager-attr-hmSimOnly"></a><b>hmSimOnly</b></td><td><code>tag</code></td><td>Regeln, die auch bei <code>hmSimulate 0</code> nur simulieren, bis sie in <code>hmLive</code> stehen (neue Regeln); <code>none</code> = keine</td></tr>
-      <tr><td><a id="HeatManager-attr-hmSampleInterval"></a><b>hmSampleInterval</b></td><td><code>300</code></td><td>Messintervall in Sekunden (mindestens 60)</td></tr>
-      <tr><td><a id="HeatManager-attr-hmNotifyCmd"></a><b>hmNotifyCmd</b></td><td><code>&ndash;</code></td><td>FHEM-Befehl für Meldungen, <code>$MSG</code> wird ersetzt, z. B. <code>{send_to_one("michael","N","Heizung","$MSG")}</code></td></tr>
-      <tr><td><a id="HeatManager-attr-disable"></a><b>disable</b></td><td><code>0</code></td><td>1 = Modul angehalten</td></tr>
-    </table>
+    <ul>
+      <li><a id="HeatManager-attr-hmSimulate"></a><b>hmSimulate</b><br>
+          1 = alle Regeln nur simulieren, 0 = alle scharf (außer <code>hmSimOnly</code>) (Default <code>1</code>).</li>
+      <li><a id="HeatManager-attr-hmRules"></a><b>hmRules</b><br>
+          aktive Regeln (die anderen laufen gar nicht) (Default <code>curve,standby,klima,ofen,sonne,saison,rampe,tag,frost</code>).</li>
+      <li><a id="HeatManager-attr-hmLive"></a><b>hmLive</b><br>
+          Regeln, die trotz <code>hmSimulate 1</code> bzw. <code>hmSimOnly</code> echt schalten. <code>frost</code> schaltet <b>nur</b>, wenn es hier steht.</li>
+      <li><a id="HeatManager-attr-hmSimOnly"></a><b>hmSimOnly</b><br>
+          Regeln, die auch bei <code>hmSimulate 0</code> nur simulieren, bis sie in <code>hmLive</code> stehen (neue Regeln); <code>none</code> = keine (Default <code>tag</code>).</li>
+      <li><a id="HeatManager-attr-hmSampleInterval"></a><b>hmSampleInterval</b><br>
+          Messintervall in Sekunden (mindestens 60) (Default <code>300</code>).</li>
+      <li><a id="HeatManager-attr-hmNotifyCmd"></a><b>hmNotifyCmd</b><br>
+          FHEM-Befehl für Meldungen, <code>$MSG</code> wird ersetzt, z. B. <code>{send_to_one("michael","N","Heizung","$MSG")}</code></li>
+      <li><a id="HeatManager-attr-disable"></a><b>disable</b><br>
+          1 = Modul angehalten (Default <code>0</code>).</li>
+    </ul>
   <br>
   <a id="HeatManager-attr-raeume"></a>
   <h4>Thermostate, Räume, Sensoren</h4>
   <p>Welche Thermostate das Modul sieht und womit es die Raumtemperatur misst.</p>
-    <table>
-      <tr><th align="left">Attribut</th><th align="left">Standard</th><th align="left">Bedeutung</th></tr>
-      <tr><td><a id="HeatManager-attr-hmThermostats"></a><b>hmThermostats</b></td><td><code>type=HeatingThermostat</code></td><td>devspec der Heizkörperthermostate, z. B. feste Liste <code>MAX_0404e5,MAX_040549</code> (Komma, da devspec)</td></tr>
-      <tr><td><a id="HeatManager-attr-hmIgnore"></a><b>hmIgnore</b></td><td><code>&ndash;</code></td><td>Thermostate, die nie bewertet werden (z. B. Keller)</td></tr>
-      <tr><td><a id="HeatManager-attr-hmRoomSensors"></a><b>hmRoomSensors</b></td><td><code>&ndash;</code></td><td>Thermostat:Raumsensor[:Reading], z. B. <code>MAX_040549:Mobil5data</code>. Nur diese Räume gelten in curve als &bdquo;zu kalt&ldquo; (der Thermostatfühler sitzt am Heizkörper)</td></tr>
-      <tr><td><a id="HeatManager-attr-hmCurveRooms"></a><b>hmCurveRooms</b></td><td><code>&ndash;</code></td><td>nur diese Thermostate zählen für das Ventilmittel von curve und tag (leer = alle). Für Räume, die absichtlich kühl laufen und sonst das Mittel drücken</td></tr>
-      <tr><td><a id="HeatManager-attr-hmOutdoorSensor"></a><b>hmOutdoorSensor</b></td><td><code>Mobil3data:temperature</code></td><td>Außentemperatur (Gerät:Reading)</td></tr>
-      <tr><td><a id="HeatManager-attr-hmFlowSensor"></a><b>hmFlowSensor</b></td><td><code>mySolvis:S12.Vorlauftemperatur_HK1</code></td><td>Vorlauftemperatur (Gerät:Reading, <code>none</code> = aus); nur Anzeige, Werte außerhalb 0&ndash;120 °C werden verworfen</td></tr>
-    </table>
+    <ul>
+      <li><a id="HeatManager-attr-hmThermostats"></a><b>hmThermostats</b><br>
+          devspec der Heizkörperthermostate, z. B. feste Liste <code>MAX_0404e5,MAX_040549</code> (Komma, da devspec) (Default <code>type=HeatingThermostat</code>).</li>
+      <li><a id="HeatManager-attr-hmIgnore"></a><b>hmIgnore</b><br>
+          Thermostate, die nie bewertet werden (z. B. Keller)</li>
+      <li><a id="HeatManager-attr-hmRoomSensors"></a><b>hmRoomSensors</b><br>
+          Thermostat:Raumsensor[:Reading], z. B. <code>MAX_040549:Mobil5data</code>. Nur diese Räume gelten in curve als &bdquo;zu kalt&ldquo; (der Thermostatfühler sitzt am Heizkörper)</li>
+      <li><a id="HeatManager-attr-hmCurveRooms"></a><b>hmCurveRooms</b><br>
+          nur diese Thermostate zählen für das Ventilmittel von curve und tag (leer = alle). Für Räume, die absichtlich kühl laufen und sonst das Mittel drücken</li>
+      <li><a id="HeatManager-attr-hmOutdoorSensor"></a><b>hmOutdoorSensor</b><br>
+          Außentemperatur (Gerät:Reading) (Default <code>Mobil3data:temperature</code>).</li>
+      <li><a id="HeatManager-attr-hmFlowSensor"></a><b>hmFlowSensor</b><br>
+          Vorlauftemperatur (Gerät:Reading, <code>none</code> = aus); nur Anzeige, Werte außerhalb 0&ndash;120 °C werden verworfen (Default <code>mySolvis:S12.Vorlauftemperatur_HK1</code>).</li>
+    </ul>
   <br>
   <a id="HeatManager-attr-heater"></a>
   <h4>Wärmeerzeuger</h4>
   <p>Gestellt wird die Feineinstellung (Parallelverschiebung der Heizkurve), bei der SolvisMax über SolvisClient. Nach dem Setzen wird nach 3 min geprüft, ob der Wert am Regler angekommen ist (bis zu dreimal).</p>
-    <table>
-      <tr><th align="left">Attribut</th><th align="left">Standard</th><th align="left">Bedeutung</th></tr>
-      <tr><td><a id="HeatManager-attr-hmHeater"></a><b>hmHeater</b></td><td><code>mySolvis</code></td><td>Gerät des Wärmeerzeugers</td></tr>
-      <tr><td><a id="HeatManager-attr-hmFineReading"></a><b>hmFineReading</b></td><td><code>C15.TemperaturFeineinstellung_HK2</code></td><td>Reading/Set-Befehl der Feineinstellung</td></tr>
-      <tr><td><a id="HeatManager-attr-hmModeReading"></a><b>hmModeReading</b></td><td><code>C12.Anlagenmodus_HK2</code></td><td>Reading/Set-Befehl der Betriebsart (für standby und tag)</td></tr>
-      <tr><td><a id="HeatManager-attr-hmFineMin"></a><b>hmFineMin</b></td><td><code>-3</code></td><td>untere Grenze der Feineinstellung</td></tr>
-      <tr><td><a id="HeatManager-attr-hmFineMax"></a><b>hmFineMax</b></td><td><code>2</code></td><td>obere Grenze der Feineinstellung</td></tr>
-    </table>
+    <ul>
+      <li><a id="HeatManager-attr-hmHeater"></a><b>hmHeater</b><br>
+          Gerät des Wärmeerzeugers (Default <code>mySolvis</code>).</li>
+      <li><a id="HeatManager-attr-hmFineReading"></a><b>hmFineReading</b><br>
+          Reading/Set-Befehl der Feineinstellung (Default <code>C15.TemperaturFeineinstellung_HK2</code>).</li>
+      <li><a id="HeatManager-attr-hmModeReading"></a><b>hmModeReading</b><br>
+          Reading/Set-Befehl der Betriebsart (für standby und tag) (Default <code>C12.Anlagenmodus_HK2</code>).</li>
+      <li><a id="HeatManager-attr-hmFineMin"></a><b>hmFineMin</b><br>
+          untere Grenze der Feineinstellung (Default <code>-3</code>).</li>
+      <li><a id="HeatManager-attr-hmFineMax"></a><b>hmFineMax</b><br>
+          obere Grenze der Feineinstellung (Default <code>2</code>).</li>
+    </ul>
   <br>
   <a id="HeatManager-attr-curve"></a>
   <h4>Regel curve (Heizkurve, täglich)</h4>
   <p>Wertet die Messungen der letzten 24 h aus, höchstens eine Stufe pro Tag. Aufheizphasen nach einem Sollwertsprung und Räume, die Ofen oder Klima gerade mitheizen, werden nicht gewertet.</p>
-    <table>
-      <tr><th align="left">Attribut</th><th align="left">Standard</th><th align="left">Bedeutung</th></tr>
-      <tr><td><a id="HeatManager-attr-hmCheckTime"></a><b>hmCheckTime</b></td><td><code>05:00</code></td><td>Uhrzeit der täglichen Auswertung</td></tr>
-      <tr><td><a id="HeatManager-attr-hmValveLow"></a><b>hmValveLow</b></td><td><code>10</code></td><td>Ventilmittel 24 h darunter (und kein Raum zu kalt) &rarr; &minus;1</td></tr>
-      <tr><td><a id="HeatManager-attr-hmValveHigh"></a><b>hmValveHigh</b></td><td><code>60</code></td><td>ein Raum im Mittel darüber &rarr; +1</td></tr>
-      <tr><td><a id="HeatManager-attr-hmColdDelta"></a><b>hmColdDelta</b></td><td><code>0.5</code></td><td>K unter Soll gilt als zu kalt (nur Räume mit hmRoomSensors)</td></tr>
-      <tr><td><a id="HeatManager-attr-hmColdMinutes"></a><b>hmColdMinutes</b></td><td><code>60</code></td><td>so viele Minuten zu kalt &rarr; +1</td></tr>
-      <tr><td><a id="HeatManager-attr-hmRampIgnore"></a><b>hmRampIgnore</b></td><td><code>90</code></td><td>Minuten nach einem Sollwertsprung, die nicht gewertet werden</td></tr>
-      <tr><td><a id="HeatManager-attr-hmMinSamplesPct"></a><b>hmMinSamplesPct</b></td><td><code>50</code></td><td>Mindestanteil gemessener Zeit in %, sonst keine Entscheidung</td></tr>
-    </table>
+    <ul>
+      <li><a id="HeatManager-attr-hmCheckTime"></a><b>hmCheckTime</b><br>
+          Uhrzeit der täglichen Auswertung (Default <code>05:00</code>).</li>
+      <li><a id="HeatManager-attr-hmValveLow"></a><b>hmValveLow</b><br>
+          Ventilmittel 24 h darunter (und kein Raum zu kalt) &rarr; &minus;1 (Default <code>10</code>).</li>
+      <li><a id="HeatManager-attr-hmValveHigh"></a><b>hmValveHigh</b><br>
+          ein Raum im Mittel darüber &rarr; +1 (Default <code>60</code>).</li>
+      <li><a id="HeatManager-attr-hmColdDelta"></a><b>hmColdDelta</b><br>
+          K unter Soll gilt als zu kalt (nur Räume mit hmRoomSensors) (Default <code>0.5</code>).</li>
+      <li><a id="HeatManager-attr-hmColdMinutes"></a><b>hmColdMinutes</b><br>
+          so viele Minuten zu kalt &rarr; +1 (Default <code>60</code>).</li>
+      <li><a id="HeatManager-attr-hmRampIgnore"></a><b>hmRampIgnore</b><br>
+          Minuten nach einem Sollwertsprung, die nicht gewertet werden (Default <code>90</code>).</li>
+      <li><a id="HeatManager-attr-hmMinSamplesPct"></a><b>hmMinSamplesPct</b><br>
+          Mindestanteil gemessener Zeit in %, sonst keine Entscheidung (Default <code>50</code>).</li>
+    </ul>
   <br>
   <a id="HeatManager-attr-tag"></a>
   <h4>Regel tag (Nachregelung tagsüber)</h4>
   <p>Stündlich im Zeitfenster: Ventile in mindestens 80 % der Messungen der letzten <code>hmDayMinutes</code> über <code>hmDayValve</code> und mindestens <code>hmDayColdRooms</code> Räume <code>hmDayColdDelta</code> unter Soll (Raumsensor, sonst Thermostatfühler) &rarr; Feineinstellung +1. Nur nach oben; abgesenkt wird nur in curve. Nicht bei Aufheizphase, Ofen, Klima, Sonnenabsenkung, Bedienung am Regler (<code>HumanAccess</code>), Standby, Abwesenheit (<code>hmClimaPresence</code>).</p>
-    <table>
-      <tr><th align="left">Attribut</th><th align="left">Standard</th><th align="left">Bedeutung</th></tr>
-      <tr><td><a id="HeatManager-attr-hmDayTimes"></a><b>hmDayTimes</b></td><td><code>07:00-21:00</code></td><td>Zeitfenster der stündlichen Prüfung</td></tr>
-      <tr><td><a id="HeatManager-attr-hmDayValve"></a><b>hmDayValve</b></td><td><code>50</code></td><td>Ventilmittel in % ...</td></tr>
-      <tr><td><a id="HeatManager-attr-hmDayMinutes"></a><b>hmDayMinutes</b></td><td><code>120</code></td><td>... seit so vielen Minuten; zugleich Mindestabstand zwischen zwei Stufen</td></tr>
-      <tr><td><a id="HeatManager-attr-hmDayColdDelta"></a><b>hmDayColdDelta</b></td><td><code>0.8</code></td><td>K unter Soll gilt als zu kalt</td></tr>
-      <tr><td><a id="HeatManager-attr-hmDayColdRooms"></a><b>hmDayColdRooms</b></td><td><code>2</code></td><td>so viele Räume müssen zu kalt sein</td></tr>
-      <tr><td><a id="HeatManager-attr-hmDayMaxSteps"></a><b>hmDayMaxSteps</b></td><td><code>2</code></td><td>höchstens so viele Stufen pro Tag</td></tr>
-    </table>
+    <ul>
+      <li><a id="HeatManager-attr-hmDayTimes"></a><b>hmDayTimes</b><br>
+          Zeitfenster der stündlichen Prüfung (Default <code>07:00-21:00</code>).</li>
+      <li><a id="HeatManager-attr-hmDayValve"></a><b>hmDayValve</b><br>
+          Ventilmittel in % ... (Default <code>50</code>).</li>
+      <li><a id="HeatManager-attr-hmDayMinutes"></a><b>hmDayMinutes</b><br>
+          ... seit so vielen Minuten; zugleich Mindestabstand zwischen zwei Stufen (Default <code>120</code>).</li>
+      <li><a id="HeatManager-attr-hmDayColdDelta"></a><b>hmDayColdDelta</b><br>
+          K unter Soll gilt als zu kalt (Default <code>0.8</code>).</li>
+      <li><a id="HeatManager-attr-hmDayColdRooms"></a><b>hmDayColdRooms</b><br>
+          so viele Räume müssen zu kalt sein (Default <code>2</code>).</li>
+      <li><a id="HeatManager-attr-hmDayMaxSteps"></a><b>hmDayMaxSteps</b><br>
+          höchstens so viele Stufen pro Tag (Default <code>2</code>).</li>
+    </ul>
   <br>
   <a id="HeatManager-attr-standby"></a>
   <h4>Regel standby</h4>
   <p>Getrennte Schwellen und eine Mindestverweildauer verhindern das Hin- und Herschalten.</p>
-    <table>
-      <tr><th align="left">Attribut</th><th align="left">Standard</th><th align="left">Bedeutung</th></tr>
-      <tr><td><a id="HeatManager-attr-hmStandbyLow"></a><b>hmStandbyLow</b></td><td><code>1.5</code></td><td>Ventilmittel aller Thermostate in % darunter &rarr; Standby</td></tr>
-      <tr><td><a id="HeatManager-attr-hmStandbyHigh"></a><b>hmStandbyHigh</b></td><td><code>3</code></td><td>darüber &rarr; wieder Betrieb</td></tr>
-      <tr><td><a id="HeatManager-attr-hmStandbyMinTime"></a><b>hmStandbyMinTime</b></td><td><code>30</code></td><td>Minuten, die jeder Zustand mindestens bleibt</td></tr>
-      <tr><td><a id="HeatManager-attr-hmStandbyModeOn"></a><b>hmStandbyModeOn</b></td><td><code>Standby</code></td><td>Wert für hmModeReading: Standby</td></tr>
-      <tr><td><a id="HeatManager-attr-hmStandbyModeOff"></a><b>hmStandbyModeOff</b></td><td><code>Timer</code></td><td>Wert für hmModeReading: Betrieb</td></tr>
-    </table>
+    <ul>
+      <li><a id="HeatManager-attr-hmStandbyLow"></a><b>hmStandbyLow</b><br>
+          Ventilmittel aller Thermostate in % darunter &rarr; Standby (Default <code>1.5</code>).</li>
+      <li><a id="HeatManager-attr-hmStandbyHigh"></a><b>hmStandbyHigh</b><br>
+          darüber &rarr; wieder Betrieb (Default <code>3</code>).</li>
+      <li><a id="HeatManager-attr-hmStandbyMinTime"></a><b>hmStandbyMinTime</b><br>
+          Minuten, die jeder Zustand mindestens bleibt (Default <code>30</code>).</li>
+      <li><a id="HeatManager-attr-hmStandbyModeOn"></a><b>hmStandbyModeOn</b><br>
+          Wert für hmModeReading: Standby (Default <code>Standby</code>).</li>
+      <li><a id="HeatManager-attr-hmStandbyModeOff"></a><b>hmStandbyModeOff</b><br>
+          Wert für hmModeReading: Betrieb (Default <code>Timer</code>).</li>
+    </ul>
   <br>
   <a id="HeatManager-attr-klima"></a>
   <h4>Regel klima</h4>
   <p>Gesetzt wird <code>autoTemperature</code> am Automatik-Dummy; läuft dort die Solar-Automatik (<code>auto_on</code>) oder hat der Nutzer übernommen, hält sich das Modul raus. Kein Start in der Aufheizphase und wenn das Profil des Klima-Raums innerhalb der Mindestlaufzeit absenkt.</p>
-    <table>
-      <tr><th align="left">Attribut</th><th align="left">Standard</th><th align="left">Bedeutung</th></tr>
-      <tr><td><a id="HeatManager-attr-hmClimaRoom"></a><b>hmClimaRoom</b></td><td><code>MAX_040549</code></td><td>Thermostat, dessen Ventil auslöst</td></tr>
-      <tr><td><a id="HeatManager-attr-hmClimaDevice"></a><b>hmClimaDevice</b></td><td><code>d_clima_gaestezimmer</code></td><td>Automatik-Dummy der Klima</td></tr>
-      <tr><td><a id="HeatManager-attr-hmClimaAc"></a><b>hmClimaAc</b></td><td><code>net_ac_86E6</code></td><td>Klimagerät (Readings power, mode)</td></tr>
-      <tr><td><a id="HeatManager-attr-hmClimaGate"></a><b>hmClimaGate</b></td><td><code>d_klima_heizgrenze</code></td><td>Gerät mit Reading <code>freigabe</code> (Klima-Heizgrenze)</td></tr>
-      <tr><td><a id="HeatManager-attr-hmClimaAffected"></a><b>hmClimaAffected</b></td><td><code>MAX_0404e5 MAX_040549</code></td><td>Räume, die die Klima mitheizt (werden dann in curve nicht gewertet)</td></tr>
-      <tr><td><a id="HeatManager-attr-hmClimaValve"></a><b>hmClimaValve</b></td><td><code>50</code></td><td>Ventilmittel in % für den Start ...</td></tr>
-      <tr><td><a id="HeatManager-attr-hmClimaValveMinutes"></a><b>hmClimaValveMinutes</b></td><td><code>60</code></td><td>... gemittelt über so viele Minuten</td></tr>
-      <tr><td><a id="HeatManager-attr-hmClimaStopValve"></a><b>hmClimaStopValve</b></td><td><code>10</code></td><td>Ventilmittel in % darunter &rarr; aus (nach der Mindestlaufzeit)</td></tr>
-      <tr><td><a id="HeatManager-attr-hmClimaTimes"></a><b>hmClimaTimes</b></td><td><code>07:00-20:30</code></td><td>Zeitfenster</td></tr>
-      <tr><td><a id="HeatManager-attr-hmClimaSetTemp"></a><b>hmClimaSetTemp</b></td><td><code>26</code></td><td>Solltemperatur an der Klima</td></tr>
-      <tr><td><a id="HeatManager-attr-hmClimaSoc"></a><b>hmClimaSoc</b></td><td><code>60</code></td><td>Akku-Mindeststand in %</td></tr>
-      <tr><td><a id="HeatManager-attr-hmClimaSocReading"></a><b>hmClimaSocReading</b></td><td><code>rem_MQTT2_SMART_SHUNT1:data_state_of_charge_shunt_state</code></td><td>Akkustand (Gerät:Reading)</td></tr>
-      <tr><td><a id="HeatManager-attr-hmClimaGrid"></a><b>hmClimaGrid</b></td><td><code>0</code></td><td>1 = auch mit Netzstrom</td></tr>
-      <tr><td><a id="HeatManager-attr-hmClimaMinOutdoor"></a><b>hmClimaMinOutdoor</b></td><td><code>3</code></td><td>Netzstrom erst ab dieser Außentemperatur</td></tr>
-      <tr><td><a id="HeatManager-attr-hmClimaMinRun"></a><b>hmClimaMinRun</b></td><td><code>60</code></td><td>Mindestlaufzeit in Minuten</td></tr>
-      <tr><td><a id="HeatManager-attr-hmClimaMinOff"></a><b>hmClimaMinOff</b></td><td><code>60</code></td><td>Mindestpause in Minuten</td></tr>
-      <tr><td><a id="HeatManager-attr-hmClimaMaxStarts"></a><b>hmClimaMaxStarts</b></td><td><code>2</code></td><td>Starts pro Tag</td></tr>
-      <tr><td><a id="HeatManager-attr-hmClimaPresence"></a><b>hmClimaPresence</b></td><td><code>irgendwer:anwesend:on</code></td><td>Gerät:Reading:Regex für &bdquo;jemand zu Hause&ldquo;; niemand da &rarr; kein Start bzw. aus; <code>none</code> = aus</td></tr>
-    </table>
+    <ul>
+      <li><a id="HeatManager-attr-hmClimaRoom"></a><b>hmClimaRoom</b><br>
+          Thermostat, dessen Ventil auslöst (Default <code>MAX_040549</code>).</li>
+      <li><a id="HeatManager-attr-hmClimaDevice"></a><b>hmClimaDevice</b><br>
+          Automatik-Dummy der Klima (Default <code>d_clima_gaestezimmer</code>).</li>
+      <li><a id="HeatManager-attr-hmClimaAc"></a><b>hmClimaAc</b><br>
+          Klimagerät (Readings power, mode) (Default <code>net_ac_86E6</code>).</li>
+      <li><a id="HeatManager-attr-hmClimaGate"></a><b>hmClimaGate</b><br>
+          Gerät mit Reading <code>freigabe</code> (Klima-Heizgrenze) (Default <code>d_klima_heizgrenze</code>).</li>
+      <li><a id="HeatManager-attr-hmClimaAffected"></a><b>hmClimaAffected</b><br>
+          Räume, die die Klima mitheizt (werden dann in curve nicht gewertet) (Default <code>MAX_0404e5 MAX_040549</code>).</li>
+      <li><a id="HeatManager-attr-hmClimaValve"></a><b>hmClimaValve</b><br>
+          Ventilmittel in % für den Start ... (Default <code>50</code>).</li>
+      <li><a id="HeatManager-attr-hmClimaValveMinutes"></a><b>hmClimaValveMinutes</b><br>
+          ... gemittelt über so viele Minuten (Default <code>60</code>).</li>
+      <li><a id="HeatManager-attr-hmClimaStopValve"></a><b>hmClimaStopValve</b><br>
+          Ventilmittel in % darunter &rarr; aus (nach der Mindestlaufzeit) (Default <code>10</code>).</li>
+      <li><a id="HeatManager-attr-hmClimaTimes"></a><b>hmClimaTimes</b><br>
+          Zeitfenster (Default <code>07:00-20:30</code>).</li>
+      <li><a id="HeatManager-attr-hmClimaSetTemp"></a><b>hmClimaSetTemp</b><br>
+          Solltemperatur an der Klima (Default <code>26</code>).</li>
+      <li><a id="HeatManager-attr-hmClimaSoc"></a><b>hmClimaSoc</b><br>
+          Akku-Mindeststand in % (Default <code>60</code>).</li>
+      <li><a id="HeatManager-attr-hmClimaSocReading"></a><b>hmClimaSocReading</b><br>
+          Akkustand (Gerät:Reading) (Default <code>rem_MQTT2_SMART_SHUNT1:data_state_of_charge_shunt_state</code>).</li>
+      <li><a id="HeatManager-attr-hmClimaGrid"></a><b>hmClimaGrid</b><br>
+          1 = auch mit Netzstrom (Default <code>0</code>).</li>
+      <li><a id="HeatManager-attr-hmClimaMinOutdoor"></a><b>hmClimaMinOutdoor</b><br>
+          Netzstrom erst ab dieser Außentemperatur (Default <code>3</code>).</li>
+      <li><a id="HeatManager-attr-hmClimaMinRun"></a><b>hmClimaMinRun</b><br>
+          Mindestlaufzeit in Minuten (Default <code>60</code>).</li>
+      <li><a id="HeatManager-attr-hmClimaMinOff"></a><b>hmClimaMinOff</b><br>
+          Mindestpause in Minuten (Default <code>60</code>).</li>
+      <li><a id="HeatManager-attr-hmClimaMaxStarts"></a><b>hmClimaMaxStarts</b><br>
+          Starts pro Tag (Default <code>2</code>).</li>
+      <li><a id="HeatManager-attr-hmClimaPresence"></a><b>hmClimaPresence</b><br>
+          Gerät:Reading:Regex für &bdquo;jemand zu Hause&ldquo;; niemand da &rarr; kein Start bzw. aus; <code>none</code> = aus (Default <code>irgendwer:anwesend:on</code>).</li>
+    </ul>
   <br>
   <a id="HeatManager-attr-outage"></a>
   <h4>Stromausfall</h4>
   <p>Kein Netz am Wechselrichter: die Klima startet nie, ein laufender Lauf endet sofort (Reading <code>powerOutage</code>).</p>
-    <table>
-      <tr><th align="left">Attribut</th><th align="left">Standard</th><th align="left">Bedeutung</th></tr>
-      <tr><td><a id="HeatManager-attr-hmOutageGridSensor"></a><b>hmOutageGridSensor</b></td><td><code>MQTT2_Wechselrichter1:netzspannung</code></td><td>Netzspannung (Gerät:Reading)</td></tr>
-      <tr><td><a id="HeatManager-attr-hmOutageGridMin"></a><b>hmOutageGridMin</b></td><td><code>100</code></td><td>V darunter = Stromausfall</td></tr>
-      <tr><td><a id="HeatManager-attr-hmOutageIndexReading"></a><b>hmOutageIndexReading</b></td><td><code>d_solar:index</code></td><td>Solarindex der vorhandenen Logik (Gerät:Reading)</td></tr>
-      <tr><td><a id="HeatManager-attr-hmOutageIndexBelow"></a><b>hmOutageIndexBelow</b></td><td><code>-40</code></td><td>Index kleiner/gleich = Stromausfall</td></tr>
-    </table>
+    <ul>
+      <li><a id="HeatManager-attr-hmOutageGridSensor"></a><b>hmOutageGridSensor</b><br>
+          Netzspannung (Gerät:Reading) (Default <code>MQTT2_Wechselrichter1:netzspannung</code>).</li>
+      <li><a id="HeatManager-attr-hmOutageGridMin"></a><b>hmOutageGridMin</b><br>
+          V darunter = Stromausfall (Default <code>100</code>).</li>
+      <li><a id="HeatManager-attr-hmOutageIndexReading"></a><b>hmOutageIndexReading</b><br>
+          Solarindex der vorhandenen Logik (Gerät:Reading) (Default <code>d_solar:index</code>).</li>
+      <li><a id="HeatManager-attr-hmOutageIndexBelow"></a><b>hmOutageIndexBelow</b><br>
+          Index kleiner/gleich = Stromausfall (Default <code>-40</code>).</li>
+    </ul>
   <br>
   <a id="HeatManager-attr-ofen"></a>
   <h4>Regel ofen</h4>
   <p>Vorheriger Zustand (<code>auto</code> oder Wert) wird gemerkt und danach wiederhergestellt &ndash; nur, wenn noch der Ofenwert eingestellt ist (Nutzeränderungen bleiben).</p>
-    <table>
-      <tr><th align="left">Attribut</th><th align="left">Standard</th><th align="left">Bedeutung</th></tr>
-      <tr><td><a id="HeatManager-attr-hmOvenSensor"></a><b>hmOvenSensor</b></td><td><code>MQTT2_MAX6675_01:Temperatur</code></td><td>Thermoelement am Stahleinsatz (Gerät:Reading)</td></tr>
-      <tr><td><a id="HeatManager-attr-hmOvenTileSensor"></a><b>hmOvenTileSensor</b></td><td><code>XMI_158d00045d0119:temperature</code></td><td>Sensor auf den Kacheln (Gerät:Reading)</td></tr>
-      <tr><td><a id="HeatManager-attr-hmOvenBurn"></a><b>hmOvenBurn</b></td><td><code>60</code></td><td>Einsatz in °C darüber &rarr; brennt</td></tr>
-      <tr><td><a id="HeatManager-attr-hmOvenStore"></a><b>hmOvenStore</b></td><td><code>35</code></td><td>Kacheln in °C darüber &rarr; speichert (2 K Hysterese)</td></tr>
-      <tr><td><a id="HeatManager-attr-hmOvenTemp"></a><b>hmOvenTemp</b></td><td><code>17</code></td><td>Soll der Ofenräume, solange er heizt</td></tr>
-      <tr><td><a id="HeatManager-attr-hmOvenRooms"></a><b>hmOvenRooms</b></td><td><code>MAX_040549 MAX_0437c3 MAX_06e2ff</code></td><td>mitbeheizte Räume (Thermostate)</td></tr>
-    </table>
+    <ul>
+      <li><a id="HeatManager-attr-hmOvenSensor"></a><b>hmOvenSensor</b><br>
+          Thermoelement am Stahleinsatz (Gerät:Reading) (Default <code>MQTT2_MAX6675_01:Temperatur</code>).</li>
+      <li><a id="HeatManager-attr-hmOvenTileSensor"></a><b>hmOvenTileSensor</b><br>
+          Sensor auf den Kacheln (Gerät:Reading) (Default <code>XMI_158d00045d0119:temperature</code>).</li>
+      <li><a id="HeatManager-attr-hmOvenBurn"></a><b>hmOvenBurn</b><br>
+          Einsatz in °C darüber &rarr; brennt (Default <code>60</code>).</li>
+      <li><a id="HeatManager-attr-hmOvenStore"></a><b>hmOvenStore</b><br>
+          Kacheln in °C darüber &rarr; speichert (2 K Hysterese) (Default <code>35</code>).</li>
+      <li><a id="HeatManager-attr-hmOvenTemp"></a><b>hmOvenTemp</b><br>
+          Soll der Ofenräume, solange er heizt (Default <code>17</code>).</li>
+      <li><a id="HeatManager-attr-hmOvenRooms"></a><b>hmOvenRooms</b><br>
+          mitbeheizte Räume (Thermostate) (Default <code>MAX_040549 MAX_0437c3 MAX_06e2ff</code>).</li>
+    </ul>
   <br>
   <a id="HeatManager-attr-sonne"></a>
   <h4>Regel sonne</h4>
   <p>Tagesplan ab <code>hmSunCheckTime</code> aus der PV-Prognose; im Fenster eine Stufe tiefer, danach zurück auf den Ausgangswert.</p>
-    <table>
-      <tr><th align="left">Attribut</th><th align="left">Standard</th><th align="left">Bedeutung</th></tr>
-      <tr><td><a id="HeatManager-attr-hmSunForecast"></a><b>hmSunForecast</b></td><td><code>Forecast</code></td><td>SolarForecast-Gerät (Today_HourHH_PVforecast)</td></tr>
-      <tr><td><a id="HeatManager-attr-hmSunWindow"></a><b>hmSunWindow</b></td><td><code>09:00-15:00</code></td><td>Sonnenfenster</td></tr>
-      <tr><td><a id="HeatManager-attr-hmSunCheckTime"></a><b>hmSunCheckTime</b></td><td><code>06:00</code></td><td>ab dann Tagesplan erstellen</td></tr>
-      <tr><td><a id="HeatManager-attr-hmSunPV"></a><b>hmSunPV</b></td><td><code>8000</code></td><td>Wh PV im Fenster für &bdquo;sonnig&ldquo;</td></tr>
-      <tr><td><a id="HeatManager-attr-hmSunTempReading"></a><b>hmSunTempReading</b></td><td><code>rem_DWD:fc0_12_TTT</code></td><td>Temperaturprognose mittags (Gerät:Reading)</td></tr>
-      <tr><td><a id="HeatManager-attr-hmSunMinTemp"></a><b>hmSunMinTemp</b></td><td><code>3</code></td><td>darunter keine Absenkung</td></tr>
-      <tr><td><a id="HeatManager-attr-hmSunStep"></a><b>hmSunStep</b></td><td><code>1</code></td><td>Stufen Absenkung</td></tr>
-    </table>
+    <ul>
+      <li><a id="HeatManager-attr-hmSunForecast"></a><b>hmSunForecast</b><br>
+          SolarForecast-Gerät (Today_HourHH_PVforecast) (Default <code>Forecast</code>).</li>
+      <li><a id="HeatManager-attr-hmSunWindow"></a><b>hmSunWindow</b><br>
+          Sonnenfenster (Default <code>09:00-15:00</code>).</li>
+      <li><a id="HeatManager-attr-hmSunCheckTime"></a><b>hmSunCheckTime</b><br>
+          ab dann Tagesplan erstellen (Default <code>06:00</code>).</li>
+      <li><a id="HeatManager-attr-hmSunPV"></a><b>hmSunPV</b><br>
+          Wh PV im Fenster für &bdquo;sonnig&ldquo; (Default <code>8000</code>).</li>
+      <li><a id="HeatManager-attr-hmSunTempReading"></a><b>hmSunTempReading</b><br>
+          Temperaturprognose mittags (Gerät:Reading) (Default <code>rem_DWD:fc0_12_TTT</code>).</li>
+      <li><a id="HeatManager-attr-hmSunMinTemp"></a><b>hmSunMinTemp</b><br>
+          darunter keine Absenkung (Default <code>3</code>).</li>
+      <li><a id="HeatManager-attr-hmSunStep"></a><b>hmSunStep</b><br>
+          Stufen Absenkung (Default <code>1</code>).</li>
+    </ul>
   <br>
   <a id="HeatManager-attr-saison"></a>
   <h4>Regel saison</h4>
   <p>Täglich mit der Auswertung; schaltet die Thermostate mit 20 s Abstand.</p>
-    <table>
-      <tr><th align="left">Attribut</th><th align="left">Standard</th><th align="left">Bedeutung</th></tr>
-      <tr><td><a id="HeatManager-attr-hmSeasonForecast"></a><b>hmSeasonForecast</b></td><td><code>rem_DWD</code></td><td>DWD-Gerät (fc0_Tx/Tn, fc1_Tx/Tn)</td></tr>
-      <tr><td><a id="HeatManager-attr-hmSeasonOn"></a><b>hmSeasonOn</b></td><td><code>12</code></td><td>Prognose-Tagesmittel darunter &rarr; heizen (<code>auto</code>)</td></tr>
-      <tr><td><a id="HeatManager-attr-hmSeasonOff"></a><b>hmSeasonOff</b></td><td><code>16</code></td><td>darüber &rarr; Sommer (<code>off</code>)</td></tr>
-      <tr><td><a id="HeatManager-attr-hmSeasonDays"></a><b>hmSeasonDays</b></td><td><code>3</code></td><td>so viele Tage in Folge</td></tr>
-    </table>
+    <ul>
+      <li><a id="HeatManager-attr-hmSeasonForecast"></a><b>hmSeasonForecast</b><br>
+          DWD-Gerät (fc0_Tx/Tn, fc1_Tx/Tn) (Default <code>rem_DWD</code>).</li>
+      <li><a id="HeatManager-attr-hmSeasonOn"></a><b>hmSeasonOn</b><br>
+          Prognose-Tagesmittel darunter &rarr; heizen (<code>auto</code>) (Default <code>12</code>).</li>
+      <li><a id="HeatManager-attr-hmSeasonOff"></a><b>hmSeasonOff</b><br>
+          darüber &rarr; Sommer (<code>off</code>) (Default <code>16</code>).</li>
+      <li><a id="HeatManager-attr-hmSeasonDays"></a><b>hmSeasonDays</b><br>
+          so viele Tage in Folge (Default <code>3</code>).</li>
+    </ul>
   <br>
   <a id="HeatManager-attr-rampe"></a>
   <h4>Regel rampe</h4>
   <p>Gesetzt wird <code>desiredTemperature auto &lt;Mittel&gt;</code> (ein Funkbefehl, das Thermostat bleibt im Automatikbetrieb). Nur Thermostate auf <code>auto</code>, deren Soll gerade dem Profil entspricht; mehrere Befehle im Abstand von 15 s.</p>
-    <table>
-      <tr><th align="left">Attribut</th><th align="left">Standard</th><th align="left">Bedeutung</th></tr>
-      <tr><td><a id="HeatManager-attr-hmRampMinutes"></a><b>hmRampMinutes</b></td><td><code>30</code></td><td>so viele Minuten vor dem Profilsprung</td></tr>
-      <tr><td><a id="HeatManager-attr-hmRampMinDelta"></a><b>hmRampMinDelta</b></td><td><code>1.5</code></td><td>K, kleinere Sprünge werden nicht abgestuft</td></tr>
-      <tr><td><a id="HeatManager-attr-hmRampRooms"></a><b>hmRampRooms</b></td><td><code>&ndash;</code></td><td>nur diese Thermostate (leer = alle)</td></tr>
-    </table>
+    <ul>
+      <li><a id="HeatManager-attr-hmRampMinutes"></a><b>hmRampMinutes</b><br>
+          so viele Minuten vor dem Profilsprung (Default <code>30</code>).</li>
+      <li><a id="HeatManager-attr-hmRampMinDelta"></a><b>hmRampMinDelta</b><br>
+          K, kleinere Sprünge werden nicht abgestuft (Default <code>1.5</code>).</li>
+      <li><a id="HeatManager-attr-hmRampRooms"></a><b>hmRampRooms</b><br>
+          nur diese Thermostate (leer = alle)</li>
+    </ul>
   <br>
   <a id="HeatManager-attr-frost"></a>
   <h4>Regel frost (Grundtemperatur eines Heizkreises in Standby)</h4>
   <p>Gedacht für einen Heizkreis, der im Regler auf Standby steht, dessen Frostschutz am Regler aber nur über die Außentemperatur greift. Eingeschaltet wird nur aus <code>hmFrostModeIdle</code>; zurück nur, wenn die Regel selbst eingeschaltet hat und noch <code>hmFrostModeHeat</code> steht &ndash; eine Betriebsart von Hand bleibt unangetastet. Ist der Sensorwert älter als <code>hmFrostMaxAge</code>, wird nichts geschaltet und über <code>hmNotifyCmd</code> gemeldet (höchstens alle 6 h). Ist er älter als <code>hmFrostFailAge</code>, geht der Heizkreis in den <b>Notbetrieb</b> <code>hmFrostModeFail</code> (nicht über eine Betriebsart von Hand); liefert der Sensor wieder, entscheidet die Regel neu. Die Regel simuliert immer, bis sie in <code>hmLive</code> steht. Der Frostschutz des Reglers bleibt als Rückfallebene eingestellt.</p>
-    <table>
-      <tr><th align="left">Attribut</th><th align="left">Standard</th><th align="left">Bedeutung</th></tr>
-      <tr><td><a id="HeatManager-attr-hmFrostSensor"></a><b>hmFrostSensor</b></td><td><code>&ndash;</code></td><td>Raumsensor <code>Gerät:Reading</code>; leer = Regel aus</td></tr>
-      <tr><td><a id="HeatManager-attr-hmFrostModeReading"></a><b>hmFrostModeReading</b></td><td><code>C06.Anlagenmodus_HK1</code></td><td>Betriebsart des Heizkreises am Wärmeerzeuger (<code>hmHeater</code>)</td></tr>
-      <tr><td><a id="HeatManager-attr-hmFrostOn"></a><b>hmFrostOn</b></td><td><code>12</code></td><td>°C, darunter wird geheizt</td></tr>
-      <tr><td><a id="HeatManager-attr-hmFrostOff"></a><b>hmFrostOff</b></td><td><code>14</code></td><td>°C, ab hier wieder Ruhe</td></tr>
-      <tr><td><a id="HeatManager-attr-hmFrostModeHeat"></a><b>hmFrostModeHeat</b></td><td><code>Tag</code></td><td>Betriebsart zum Heizen</td></tr>
-      <tr><td><a id="HeatManager-attr-hmFrostModeIdle"></a><b>hmFrostModeIdle</b></td><td><code>Standby</code></td><td>Ruhe-Betriebsart</td></tr>
-      <tr><td><a id="HeatManager-attr-hmFrostMaxAge"></a><b>hmFrostMaxAge</b></td><td><code>120</code></td><td>Minuten; älterer Sensorwert &rarr; nichts schalten, melden</td></tr>
-      <tr><td><a id="HeatManager-attr-hmFrostFailAge"></a><b>hmFrostFailAge</b></td><td><code>1440</code></td><td>Minuten ohne Sensorwert &rarr; Notbetrieb</td></tr>
-      <tr><td><a id="HeatManager-attr-hmFrostModeFail"></a><b>hmFrostModeFail</b></td><td><code>Nacht</code></td><td>Betriebsart im Notbetrieb</td></tr>
-    </table>
+    <ul>
+      <li><a id="HeatManager-attr-hmFrostSensor"></a><b>hmFrostSensor</b><br>
+          Raumsensor <code>Gerät:Reading</code>; leer = Regel aus</li>
+      <li><a id="HeatManager-attr-hmFrostModeReading"></a><b>hmFrostModeReading</b><br>
+          Betriebsart des Heizkreises am Wärmeerzeuger (<code>hmHeater</code>) (Default <code>C06.Anlagenmodus_HK1</code>).</li>
+      <li><a id="HeatManager-attr-hmFrostOn"></a><b>hmFrostOn</b><br>
+          °C, darunter wird geheizt (Default <code>12</code>).</li>
+      <li><a id="HeatManager-attr-hmFrostOff"></a><b>hmFrostOff</b><br>
+          °C, ab hier wieder Ruhe (Default <code>14</code>).</li>
+      <li><a id="HeatManager-attr-hmFrostModeHeat"></a><b>hmFrostModeHeat</b><br>
+          Betriebsart zum Heizen (Default <code>Tag</code>).</li>
+      <li><a id="HeatManager-attr-hmFrostModeIdle"></a><b>hmFrostModeIdle</b><br>
+          Ruhe-Betriebsart (Default <code>Standby</code>).</li>
+      <li><a id="HeatManager-attr-hmFrostMaxAge"></a><b>hmFrostMaxAge</b><br>
+          Minuten; älterer Sensorwert &rarr; nichts schalten, melden (Default <code>120</code>).</li>
+      <li><a id="HeatManager-attr-hmFrostFailAge"></a><b>hmFrostFailAge</b><br>
+          Minuten ohne Sensorwert &rarr; Notbetrieb (Default <code>1440</code>).</li>
+      <li><a id="HeatManager-attr-hmFrostModeFail"></a><b>hmFrostModeFail</b><br>
+          Betriebsart im Notbetrieb (Default <code>Nacht</code>).</li>
+    </ul>
   <br>
   <a id="HeatManager-readings"></a>
   <h3>Readings</h3>

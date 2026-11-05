@@ -1,6 +1,7 @@
 #!/usr/bin/perl
 #
 # Commandref (v0.9.1): jedes Attribut der AttrList hat einen Eintrag mit Anker.
+# v0.10.1: Anker im <li>, sonst zeigt FHEMWEB beim attr-Dropdown keine Hilfe.
 
 use strict;
 use warnings;
@@ -20,6 +21,9 @@ HeatManager_Initialize($h);
 foreach my $a (map { (split(/:/, $_))[0] } split(/\s+/, $h->{AttrList})) {
     next if ($a eq "");
     ok($doc =~ /id="HeatManager-attr-\Q$a\E"/, "Attribut $a dokumentiert");
+    # FHEMWEB zeigt die Hilfe unter dem attr-Dropdown nur, wenn der Anker in
+    # einem <li> steht (fhemweb.js FW_displayHelp) - nicht in einer Tabellenzelle
+    ok($doc =~ /<li><a id="HeatManager-attr-\Q$a\E"/, "Attribut $a: Anker im <li> (Hilfe im Dropdown)");
 }
 ok($doc =~ /Die Regeln auf einen Blick/, "Regelübersicht vorhanden");
 done();
