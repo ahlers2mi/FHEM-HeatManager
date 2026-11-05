@@ -50,6 +50,17 @@
 #     hmDayMaxSteps Stufen pro Tag. Nur nach oben (Komfort); abgesenkt wird
 #     weiter nur bei der Tagesauswertung. Nicht bei Aufheizphase, Ofen, Klima,
 #     Sonnenabsenkung, Bedienung am Regler, Standby, Abwesenheit.
+#   * frost: Grundtemperatur für einen Heizkreis, der sonst in Standby steht
+#     (z. B. leere Wohnung). Fällt der Raumsensor hmFrostSensor unter hmFrostOn,
+#     wird der Heizkreis auf hmFrostModeHeat gestellt, ab hmFrostOff zurück auf
+#     hmFrostModeIdle. Eingeschaltet wird nur aus hmFrostModeIdle, zurück nur,
+#     wenn die Regel selbst eingeschaltet hat und noch hmFrostModeHeat steht -
+#     eine Betriebsart von Hand bleibt unangetastet. Sensor älter als
+#     hmFrostMaxAge -> Meldung (höchstens alle 6 h), nichts schalten; älter
+#     als hmFrostFailAge (24 h) -> Notbetrieb hmFrostModeFail (Nacht), bis der
+#     Sensor wieder liefert. Ohne
+#     hmFrostSensor ist die Regel aus. Sie simuliert immer, bis sie in hmLive
+#     steht (auch bei hmSimulate 0).
 #
 # Standard ist der Simulationsmodus (hmSimulate 1): das Modul misst, rechnet
 # und schreibt in Readings (sim_<regel>, last_action), was es tun würde, schaltet
@@ -61,7 +72,7 @@
 # keine eigene Hardware.
 #
 # Autor:    ahlers2mi
-# Version:  v0.9.1
+# Version:  v0.10.0
 # Lizenz:   GPL v2 oder höher (wie FHEM)
 ##############################################################################
 
@@ -77,14 +88,19 @@ use JSON::PP ();
 # Von fhem.pl bereitgestellte Globals.
 use vars qw($init_done %defs %attr $readingFnAttributes);
 
-my $HM_VERSION = "0.9.1";
+my $HM_VERSION = "0.10.0";
+
+# Regeln, die nur echt schalten, wenn sie in hmLive stehen - unabhängig von
+# hmSimulate und hmSimOnly. Für Regeln, die bei bestehenden Installationen
+# neu hinzukommen (hmSimOnly steht dort oft auf none).
+my %HM_needLive = (frost => 1);
 
 # Voreinstellungen aller Attribute. Sie passen zur Anlage des Autors und lassen
 # sich einzeln per attr überschreiben; HeatManager_A liest Attribut oder Default.
 my %HM_defaults = (
     # --- allgemein ---
     hmSimulate          => 1,                                   # 1 = nur rechnen und protokollieren
-    hmRules             => "curve,standby,klima,ofen,sonne,saison,rampe,tag", # aktive Regeln
+    hmRules             => "curve,standby,klima,ofen,sonne,saison,rampe,tag,frost", # aktive Regeln
     hmLive              => "",                                  # Regeln, die trotz hmSimulate 1 echt schalten
     hmSimOnly           => "tag",                               # Regeln, die immer simulieren (neue Regeln), außer sie stehen in hmLive; none = keine
     hmSampleInterval    => 300,                                 # Messintervall in s (min. 60)
@@ -171,6 +187,16 @@ my %HM_defaults = (
     hmDayColdDelta      => 0.8,                                 # K unter Soll gilt als zu kalt
     hmDayColdRooms      => 2,                                   # so viele Räume müssen zu kalt sein
     hmDayMaxSteps       => 2,                                   # höchstens so viele Stufen pro Tag
+    # --- Regel frost (Grundtemperatur Heizkreis in Standby) ---
+    hmFrostSensor       => "",                                  # Raumsensor Gerät:Reading; leer = Regel aus
+    hmFrostModeReading  => "C06.Anlagenmodus_HK1",              # Betriebsart des Heizkreises
+    hmFrostOn           => 12,                                  # Raum darunter -> heizen
+    hmFrostOff          => 14,                                  # ab hier -> wieder Standby
+    hmFrostModeHeat     => "Tag",                               # Wert zum Heizen
+    hmFrostModeIdle     => "Standby",                           # Ruhewert
+    hmFrostMaxAge       => 120,                                 # min, älterer Sensorwert -> nichts schalten
+    hmFrostFailAge      => 1440,                                # min, so lange ohne Wert -> Notbetrieb
+    hmFrostModeFail     => "Nacht",                             # Betriebsart im Notbetrieb
 );
 
 # ----------------------------------------------------------------------------
@@ -190,8 +216,8 @@ sub HeatManager_Initialize {
     $hash->{AttrList} =
           "disable:0,1 "
         . "hmSimulate:1,0 "
-        . "hmRules:multiple-strict,curve,standby,klima,ofen,sonne,saison,rampe,tag "
-        . "hmLive:multiple-strict,curve,standby,klima,ofen,sonne,saison,rampe,tag "
+        . "hmRules:multiple-strict,curve,standby,klima,ofen,sonne,saison,rampe,tag,frost "
+        . "hmLive:multiple-strict,curve,standby,klima,ofen,sonne,saison,rampe,tag,frost "
         . "hmSimOnly "
         . "hmSampleInterval hmNotifyCmd:textField-long hmOutdoorSensor hmFlowSensor "
         # --- Thermostate / Räume ---
@@ -220,6 +246,8 @@ sub HeatManager_Initialize {
         . "hmRampMinutes hmRampMinDelta hmRampRooms "
         # --- tag ---
         . "hmDayTimes hmDayValve hmDayMinutes hmDayColdDelta hmDayColdRooms hmDayMaxSteps "
+        # --- frost ---
+        . "hmFrostSensor hmFrostModeReading hmFrostOn hmFrostOff hmFrostModeHeat hmFrostModeIdle hmFrostMaxAge hmFrostFailAge hmFrostModeFail "
         . $readingFnAttributes;
     return undef;
 }
@@ -252,6 +280,7 @@ sub HeatManager_RuleOn {
 sub HeatManager_Sim {
     my ($name, $rule) = @_;
     my $live = (grep { $_ eq $rule } split(/,/, HeatManager_A($name, "hmLive"))) ? 1 : 0;
+    return 1 if (!$live && $HM_needLive{$rule});
     return 1 if (!$live && grep { $_ eq $rule } split(/[\s,]+/, HeatManager_A($name, "hmSimOnly") // ""));
     return 0 if (!HeatManager_A($name, "hmSimulate"));
     return $live ? 0 : 1;
@@ -654,6 +683,7 @@ sub HeatManager_SampleRun {
     HeatManager_Clima($hash, $hash->{helper}{valveNow}{HeatManager_A($name, "hmClimaRoom")})
         if (HeatManager_RuleOn($name, "klima"));
     HeatManager_Day($hash, \%excl, \%ramp, $oven, $acHeat) if (HeatManager_RuleOn($name, "tag"));
+    HeatManager_Frost($hash)         if (HeatManager_RuleOn($name, "frost"));
     return undef;
 }
 
@@ -894,6 +924,131 @@ sub HeatManager_Standby {
     readingsBulkUpdate($hash, "standby_info",   sprintf("%s bei Ventilen %.1f %%", $new, $avg));
     readingsEndUpdate($hash, 1);
     HeatManager_Do($hash, "set $heater $rd $new", "standby");
+    return undef;
+}
+
+# ============================================================================
+# Regel frost
+# ============================================================================
+
+# ----------------------------------------------------------------------------
+# HeatManager_Frost
+#   Grundtemperatur für einen Heizkreis, der sonst in Standby steht. Zustand
+#   in Readings (frost_state aus|heizt), damit er einen Neustart übersteht.
+#   Einschalten nur aus hmFrostModeIdle; zurückschalten nur, wenn die Regel
+#   selbst eingeschaltet hat und am Regler noch hmFrostModeHeat steht. Hat
+#   jemand inzwischen von Hand umgestellt, gibt die Regel den Heizkreis frei.
+#   Sensorausfall: ab hmFrostMaxAge nur melden; ab hmFrostFailAge Notbetrieb
+#   (hmFrostModeFail, frost_state notbetrieb) - nur aus hmFrostModeIdle oder
+#   hmFrostModeHeat, also nicht über eine Betriebsart von Hand. Liefert der
+#   Sensor wieder, entscheidet die Regel neu (unter hmFrostOff -> heizen,
+#   sonst Ruhe), sofern noch hmFrostModeFail steht.
+# ----------------------------------------------------------------------------
+sub HeatManager_Frost {
+    my ($hash) = @_;
+    my $name = $hash->{NAME};
+    my $spec = HeatManager_A($name, "hmFrostSensor");
+    return undef if (!$spec || $spec eq "none");
+
+    my $heater = HeatManager_A($name, "hmHeater");
+    my $rd     = HeatManager_A($name, "hmFrostModeReading");
+    my $heat   = HeatManager_A($name, "hmFrostModeHeat");
+    my $idle   = HeatManager_A($name, "hmFrostModeIdle");
+    my $on     = HeatManager_A($name, "hmFrostOn");
+    my $off    = HeatManager_A($name, "hmFrostOff");
+    my $cur    = ReadingsVal($heater, $rd, "");
+    my $state  = ReadingsVal($name, "frost_state", "aus");
+    my $now    = time();
+
+    # Sensor prüfen: Wert vorhanden und nicht zu alt
+    my ($d, $r) = split(/:/, $spec);
+    my $temp = HeatManager_SensorVal($spec);
+    my $age  = ($d && $r) ? ReadingsAge($d, $r, undef) : undef;
+    my $fail = HeatManager_A($name, "hmFrostModeFail");
+    if (!defined($temp) || !defined($age) || $age > HeatManager_A($name, "hmFrostMaxAge") * 60) {
+        # Ohne Zeitstempel (Reading fehlt) zählt die Zeit seit der ersten Feststellung
+        my $ss = ReadingsVal($name, "frost_stale_since", 0);
+        if (!$ss) {
+            $ss = defined($age) ? $now - $age : $now;
+            readingsSingleUpdate($hash, "frost_stale_since", $ss, 1);
+        }
+        my $stale = defined($age) ? $age : $now - $ss;
+        my $info = sprintf("Sensor %s seit %d min ohne Wert", $spec, $stale / 60);
+
+        # Notbetrieb nach hmFrostFailAge - nicht über eine Betriebsart von Hand
+        if ($stale > HeatManager_A($name, "hmFrostFailAge") * 60 && $state ne "notbetrieb") {
+            if ($cur eq $idle || $cur eq $heat || HeatManager_Sim($name, "frost")) {
+                readingsBeginUpdate($hash);
+                readingsBulkUpdate($hash, "frost_state", "notbetrieb");
+                readingsBulkUpdate($hash, "frost_since", $now);
+                readingsBulkUpdate($hash, "frost_info",  "$info - Notbetrieb $fail");
+                readingsEndUpdate($hash, 1);
+                HeatManager_Do($hash, "set $heater $rd $fail", "frost",
+                    "Frostschutz: $info, $rd auf $fail (Notbetrieb)");
+                return undef;
+            }
+            $info .= ", $rd steht von Hand auf $cur";
+        }
+        $info .= $state eq "notbetrieb" ? " - Notbetrieb $fail" : " - nichts geschaltet";
+        readingsSingleUpdate($hash, "frost_info", $info, 1);
+        if ($now - ReadingsVal($name, "frost_warned", 0) >= 6 * 3600) {
+            readingsSingleUpdate($hash, "frost_warned", $now, 1);
+            HeatManager_Notify($hash, "HeatManager frost: $info");
+        }
+        return undef;
+    }
+    readingsSingleUpdate($hash, "frost_stale_since", 0, 1) if (ReadingsVal($name, "frost_stale_since", 0));
+    readingsSingleUpdate($hash, "frost_temp", sprintf("%.1f", $temp), 1);
+
+    # Sensor liefert wieder: Notbetrieb beenden
+    if ($state eq "notbetrieb") {
+        if ($cur ne $fail && !HeatManager_Sim($name, "frost")) {
+            readingsBeginUpdate($hash);
+            readingsBulkUpdate($hash, "frost_state", "aus");
+            readingsBulkUpdate($hash, "frost_info",
+                sprintf("Sensor wieder da (%.1f C), %s steht von Hand auf %s - bleibt so", $temp, $rd, $cur));
+            readingsEndUpdate($hash, 1);
+            return undef;
+        }
+        my ($st, $mode) = $temp < $off ? ("heizt", $heat) : ("aus", $idle);
+        readingsBeginUpdate($hash);
+        readingsBulkUpdate($hash, "frost_state", $st);
+        readingsBulkUpdate($hash, "frost_since", $now);
+        readingsBulkUpdate($hash, "frost_info",  sprintf("Sensor wieder da, %s bei %.1f C", $mode, $temp));
+        readingsEndUpdate($hash, 1);
+        HeatManager_Do($hash, "set $heater $rd $mode", "frost",
+            sprintf("Frostschutz: Sensor wieder da (%.1f C), %s auf %s", $temp, $rd, $mode));
+        return undef;
+    }
+
+    if ($state ne "heizt" && $temp < $on) {
+        if ($cur ne $idle) {
+            readingsSingleUpdate($hash, "frost_info",
+                sprintf("%.1f C unter %s, aber %s steht auf %s - nichts geschaltet", $temp, $on, $rd, $cur), 1);
+            return undef;
+        }
+        readingsBeginUpdate($hash);
+        readingsBulkUpdate($hash, "frost_state", "heizt");
+        readingsBulkUpdate($hash, "frost_since", $now);
+        readingsBulkUpdate($hash, "frost_info",  sprintf("%s bei %.1f C (unter %s)", $heat, $temp, $on));
+        readingsEndUpdate($hash, 1);
+        HeatManager_Do($hash, "set $heater $rd $heat", "frost",
+            sprintf("Frostschutz: %s auf %s, Raum %.1f C", $rd, $heat, $temp));
+    } elsif ($state eq "heizt" && $temp >= $off) {
+        readingsBeginUpdate($hash);
+        readingsBulkUpdate($hash, "frost_state", "aus");
+        readingsBulkUpdate($hash, "frost_since", $now);
+        if ($cur ne $heat && !HeatManager_Sim($name, "frost")) {
+            readingsBulkUpdate($hash, "frost_info",
+                sprintf("%.1f C erreicht, %s steht von Hand auf %s - bleibt so", $temp, $rd, $cur));
+            readingsEndUpdate($hash, 1);
+            return undef;
+        }
+        readingsBulkUpdate($hash, "frost_info", sprintf("%s bei %.1f C (ab %s)", $idle, $temp, $off));
+        readingsEndUpdate($hash, 1);
+        HeatManager_Do($hash, "set $heater $rd $idle", "frost",
+            sprintf("Frostschutz: %s zurück auf %s, Raum %.1f C", $rd, $idle, $temp));
+    }
     return undef;
 }
 
@@ -1636,6 +1791,7 @@ sub HeatManager_Get {
     <tr><td><b>saison</b></td><td>Heizbeginn/-ende nach Wetterprognose: Thermostate auf <code>auto</code> bzw. <code>off</code>.</td></tr>
     <tr><td><b>rampe</b></td><td>Vor einem Sprung nach oben im Wochenprofil wird der Zwischenwert gesetzt, damit nicht alle Ventile gleichzeitig aufreißen.</td></tr>
     <tr><td><b>tag</b></td><td>Nachregelung tagsüber: stündlich, wenn die Wohnräume lange weit offene Ventile haben und zu kalt sind, Feineinstellung +1 (höchstens <code>hmDayMaxSteps</code> pro Tag, nur nach oben).</td></tr>
+    <tr><td><b>frost</b></td><td>Grundtemperatur für einen Heizkreis in Standby (z. B. leere Wohnung): Raum unter <code>hmFrostOn</code> &rarr; Heizkreis auf <code>hmFrostModeHeat</code>, ab <code>hmFrostOff</code> zurück auf <code>hmFrostModeIdle</code>. Ohne <code>hmFrostSensor</code> aus; schaltet nur, wenn <code>frost</code> in <code>hmLive</code> steht.</td></tr>
   </table>
   <br>
 
@@ -1666,8 +1822,8 @@ sub HeatManager_Get {
     <table>
       <tr><th align="left">Attribut</th><th align="left">Standard</th><th align="left">Bedeutung</th></tr>
       <tr><td><a id="HeatManager-attr-hmSimulate"></a><b>hmSimulate</b></td><td><code>1</code></td><td>1 = alle Regeln nur simulieren, 0 = alle scharf (außer <code>hmSimOnly</code>)</td></tr>
-      <tr><td><a id="HeatManager-attr-hmRules"></a><b>hmRules</b></td><td><code>curve,standby,klima,ofen,sonne,saison,rampe,tag</code></td><td>aktive Regeln (die anderen laufen gar nicht)</td></tr>
-      <tr><td><a id="HeatManager-attr-hmLive"></a><b>hmLive</b></td><td><code>&ndash;</code></td><td>Regeln, die trotz <code>hmSimulate 1</code> bzw. <code>hmSimOnly</code> echt schalten</td></tr>
+      <tr><td><a id="HeatManager-attr-hmRules"></a><b>hmRules</b></td><td><code>curve,standby,klima,ofen,sonne,saison,rampe,tag,frost</code></td><td>aktive Regeln (die anderen laufen gar nicht)</td></tr>
+      <tr><td><a id="HeatManager-attr-hmLive"></a><b>hmLive</b></td><td><code>&ndash;</code></td><td>Regeln, die trotz <code>hmSimulate 1</code> bzw. <code>hmSimOnly</code> echt schalten. <code>frost</code> schaltet <b>nur</b>, wenn es hier steht.</td></tr>
       <tr><td><a id="HeatManager-attr-hmSimOnly"></a><b>hmSimOnly</b></td><td><code>tag</code></td><td>Regeln, die auch bei <code>hmSimulate 0</code> nur simulieren, bis sie in <code>hmLive</code> stehen (neue Regeln); <code>none</code> = keine</td></tr>
       <tr><td><a id="HeatManager-attr-hmSampleInterval"></a><b>hmSampleInterval</b></td><td><code>300</code></td><td>Messintervall in Sekunden (mindestens 60)</td></tr>
       <tr><td><a id="HeatManager-attr-hmNotifyCmd"></a><b>hmNotifyCmd</b></td><td><code>&ndash;</code></td><td>FHEM-Befehl für Meldungen, <code>$MSG</code> wird ersetzt, z. B. <code>{send_to_one("michael","N","Heizung","$MSG")}</code></td></tr>
@@ -1822,6 +1978,22 @@ sub HeatManager_Get {
       <tr><td><a id="HeatManager-attr-hmRampRooms"></a><b>hmRampRooms</b></td><td><code>&ndash;</code></td><td>nur diese Thermostate (leer = alle)</td></tr>
     </table>
   <br>
+  <a id="HeatManager-attr-frost"></a>
+  <h4>Regel frost (Grundtemperatur eines Heizkreises in Standby)</h4>
+  <p>Gedacht für einen Heizkreis, der im Regler auf Standby steht, dessen Frostschutz am Regler aber nur über die Außentemperatur greift. Eingeschaltet wird nur aus <code>hmFrostModeIdle</code>; zurück nur, wenn die Regel selbst eingeschaltet hat und noch <code>hmFrostModeHeat</code> steht &ndash; eine Betriebsart von Hand bleibt unangetastet. Ist der Sensorwert älter als <code>hmFrostMaxAge</code>, wird nichts geschaltet und über <code>hmNotifyCmd</code> gemeldet (höchstens alle 6 h). Ist er älter als <code>hmFrostFailAge</code>, geht der Heizkreis in den <b>Notbetrieb</b> <code>hmFrostModeFail</code> (nicht über eine Betriebsart von Hand); liefert der Sensor wieder, entscheidet die Regel neu. Die Regel simuliert immer, bis sie in <code>hmLive</code> steht. Der Frostschutz des Reglers bleibt als Rückfallebene eingestellt.</p>
+    <table>
+      <tr><th align="left">Attribut</th><th align="left">Standard</th><th align="left">Bedeutung</th></tr>
+      <tr><td><a id="HeatManager-attr-hmFrostSensor"></a><b>hmFrostSensor</b></td><td><code>&ndash;</code></td><td>Raumsensor <code>Gerät:Reading</code>; leer = Regel aus</td></tr>
+      <tr><td><a id="HeatManager-attr-hmFrostModeReading"></a><b>hmFrostModeReading</b></td><td><code>C06.Anlagenmodus_HK1</code></td><td>Betriebsart des Heizkreises am Wärmeerzeuger (<code>hmHeater</code>)</td></tr>
+      <tr><td><a id="HeatManager-attr-hmFrostOn"></a><b>hmFrostOn</b></td><td><code>12</code></td><td>°C, darunter wird geheizt</td></tr>
+      <tr><td><a id="HeatManager-attr-hmFrostOff"></a><b>hmFrostOff</b></td><td><code>14</code></td><td>°C, ab hier wieder Ruhe</td></tr>
+      <tr><td><a id="HeatManager-attr-hmFrostModeHeat"></a><b>hmFrostModeHeat</b></td><td><code>Tag</code></td><td>Betriebsart zum Heizen</td></tr>
+      <tr><td><a id="HeatManager-attr-hmFrostModeIdle"></a><b>hmFrostModeIdle</b></td><td><code>Standby</code></td><td>Ruhe-Betriebsart</td></tr>
+      <tr><td><a id="HeatManager-attr-hmFrostMaxAge"></a><b>hmFrostMaxAge</b></td><td><code>120</code></td><td>Minuten; älterer Sensorwert &rarr; nichts schalten, melden</td></tr>
+      <tr><td><a id="HeatManager-attr-hmFrostFailAge"></a><b>hmFrostFailAge</b></td><td><code>1440</code></td><td>Minuten ohne Sensorwert &rarr; Notbetrieb</td></tr>
+      <tr><td><a id="HeatManager-attr-hmFrostModeFail"></a><b>hmFrostModeFail</b></td><td><code>Nacht</code></td><td>Betriebsart im Notbetrieb</td></tr>
+    </table>
+  <br>
   <a id="HeatManager-readings"></a>
   <h3>Readings</h3>
   <table>
@@ -1831,6 +2003,7 @@ sub HeatManager_Get {
     <tr><td>curve</td><td>fine_current, fine_target, decision, verify, next_check</td></tr>
     <tr><td>tag</td><td>day_info, day_valve, day_cold, day_steps_today, day_last_step</td></tr>
     <tr><td>standby</td><td>standby_target, standby_since, standby_info</td></tr>
+    <tr><td>frost</td><td>frost_state (aus|heizt|notbetrieb), frost_temp, frost_since, frost_info, frost_warned, frost_stale_since</td></tr>
     <tr><td>ofen</td><td>oven_state (aus|brennt|speichert), oven_insert, oven_tiles, oven_since, oven_prev_&lt;thermostat&gt;</td></tr>
     <tr><td>klima</td><td>clima_state, clima_info, clima_valve_avg, clima_starts_today, powerOutage</td></tr>
     <tr><td>sonne, saison, rampe</td><td>sun_forecast, sun_planned, sun_active, sun_base, season, season_count, season_info, rampe_info, rampe_today</td></tr>

@@ -42,6 +42,11 @@ sub ReadingsVal {
     return $d if (!exists $defs{$n} || !exists $defs{$n}{READINGS}{$r});
     return $defs{$n}{READINGS}{$r}{VAL};
 }
+sub ReadingsAge {
+    my ($n, $r, $d) = @_;
+    return $d if (!exists $defs{$n} || !exists $defs{$n}{READINGS}{$r});
+    return $NOW - ($defs{$n}{READINGS}{$r}{TS} // $NOW);
+}
 sub gettimeofday         { return $NOW; }
 sub InternalTimer        { }
 sub RemoveInternalTimer  { }
@@ -92,7 +97,7 @@ sub done {
 
 # Reading des Testgeräts bzw. eines beliebigen Geräts
 sub rd  { my ($r, $d) = @_; return ReadingsVal($d // $DEVICE, $r, ""); }
-sub set_rd { my ($d, $r, $v) = @_; $defs{$d}{NAME} //= $d; $defs{$d}{READINGS}{$r}{VAL} = $v; }
+sub set_rd { my ($d, $r, $v) = @_; $defs{$d}{NAME} //= $d; $defs{$d}{READINGS}{$r}{VAL} = $v; $defs{$d}{READINGS}{$r}{TS} = $NOW; }
 
 # Standard-Anlage: zwei Thermostate (A mit Raumsensor, B), ein Keller K
 # (ignoriert), Solvis, Klima-Dummy, Heizgrenze, Akku, Wechselrichter, Ofen.
