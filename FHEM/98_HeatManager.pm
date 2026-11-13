@@ -12,10 +12,11 @@
 #     Raum zu kalt -> eine Stufe runter; ein Raum zu lange zu kalt oder ein
 #     Ventil dauerhaft weit offen -> eine Stufe rauf. Höchstens eine Stufe pro
 #     Tag, damit sich das träge Haus einpendeln kann. Aufheizphasen nach einem
-#     Sollwertsprung (Wochenplan) und Räume, die gerade Ofen oder Klima
-#     mitheizen, werden nicht gewertet. Ob der Wert am Regler angekommen ist,
-#     wird nach 3 min geprüft (SolvisClient pausiert, solange jemand die
-#     Fernbedienung benutzt).
+#     Sollwertsprung (Wochenplan), Räume, die gerade Ofen oder Klima
+#     mitheizen, und Räume, deren Soll von Hand über das Wochenprofil gedreht
+#     wurde (hmHandDelta, z. B. Bad kurz auf 25 °C), werden nicht gewertet.
+#     Ob der Wert am Regler angekommen ist, wird nach 3 min geprüft
+#     (SolvisClient pausiert, solange jemand die Fernbedienung benutzt).
 #   * standby: Heizkreis in Standby, wenn die Ventile praktisch zu sind.
 #     Getrennte Schwellen (Hysterese) und eine Mindestverweildauer verhindern
 #     das ständige Hin- und Herschalten einer Ein-Schwellen-Logik.
@@ -72,7 +73,7 @@
 # keine eigene Hardware.
 #
 # Autor:    ahlers2mi
-# Version:  v0.10.1
+# Version:  v0.11.0
 # Lizenz:   GPL v2 oder höher (wie FHEM)
 ##############################################################################
 
@@ -88,7 +89,7 @@ use JSON::PP ();
 # Von fhem.pl bereitgestellte Globals.
 use vars qw($init_done %defs %attr $readingFnAttributes);
 
-my $HM_VERSION = "0.10.1";
+my $HM_VERSION = "0.11.0";
 
 # Regeln, die nur echt schalten, wenn sie in hmLive stehen - unabhängig von
 # hmSimulate und hmSimOnly. Für Regeln, die bei bestehenden Installationen
@@ -125,6 +126,7 @@ my %HM_defaults = (
     hmColdDelta         => 0.5,                                 # K unter Soll gilt als zu kalt
     hmColdMinutes       => 60,                                  # so lange zu kalt -> +1
     hmRampIgnore        => 90,                                  # min nach Sollwertsprung nicht werten
+    hmHandDelta         => 0.5,                                 # mehr als so viele K über Profil = von Hand gedreht, nicht werten (0 = aus)
     hmMinSamplesPct     => 50,                                  # Mindestanteil gemessener Zeit
     # --- Regel standby ---
     hmStandbyLow        => 1.5,                                 # Ventilmittel darunter -> Standby
@@ -226,7 +228,7 @@ sub HeatManager_Initialize {
         . "hmHeater hmFineReading hmModeReading "
         # --- curve ---
         . "hmFineMin hmFineMax hmCheckTime hmValveLow hmValveHigh "
-        . "hmColdDelta hmColdMinutes hmRampIgnore hmMinSamplesPct "
+        . "hmColdDelta hmColdMinutes hmRampIgnore hmHandDelta hmMinSamplesPct "
         # --- standby ---
         . "hmStandbyLow hmStandbyHigh hmStandbyMinTime hmStandbyModeOn hmStandbyModeOff "
         # --- ofen ---
@@ -563,7 +565,8 @@ sub HeatManager_FlowVal {
 #     1. Ofenregel ausführen und Ofen-/Klima-beeinflusste Räume bestimmen.
 #     2. Je Thermostat Ventil und "zu kalt" erfassen. Ausgeblendet werden
 #        Thermostate ohne Zahlen-Sollwert (off/on), Aufheizphasen nach einem
-#        Sollwertsprung und Räume, die Ofen oder Klima gerade mitheizen.
+#        Sollwertsprung, Räume, die Ofen oder Klima gerade mitheizen, und
+#        Räume, die von Hand über das Wochenprofil gedreht wurden ("hand").
 #     3. Standby- und Klimaregel aufrufen.
 #   Die Heizkurve wertet die gesammelten Messwerte einmal täglich aus.
 # ----------------------------------------------------------------------------
@@ -642,6 +645,10 @@ sub HeatManager_SampleRun {
 
         next if ($des !~ /^[\d.]+$/);                      # off/on: keine Bewertung
         next if ($excl{$t});                               # Ofen/Klima heizt mit
+        if (HeatManager_HandHigh($name, $t, $des)) {       # von Hand hochgedreht (v0.11.0)
+            $excl{$t} = "hand";                            # gilt auch für rampe und tag
+            next;
+        }
         if (($now - ($hash->{helper}{desiredChange}{$t} // 0)) < $ramp) {
             $ramp{$t} = 1;                                 # Aufheizphase
             next;
@@ -685,6 +692,29 @@ sub HeatManager_SampleRun {
     HeatManager_Day($hash, \%excl, \%ramp, $oven, $acHeat) if (HeatManager_RuleOn($name, "tag"));
     HeatManager_Frost($hash)         if (HeatManager_RuleOn($name, "frost"));
     return undef;
+}
+
+# ----------------------------------------------------------------------------
+# HeatManager_HandHigh
+#   Wurde das Soll eines Thermostats von Hand über das Wochenprofil gedreht
+#   (Bad kurz auf 25 °C, Kind am Drehrad, Boost)? Dann zählt der Raum weder als
+#   "zu kalt" noch für das Ventilmittel - sonst hebt ein einmaliges Hochdrehen
+#   die Heizkurve für alle an (08.11.2026: Bad 25 °C -> Feineinstellung +1).
+#   Maßstab ist der aktuelle Profilwert; steht der nächste Schaltpunkt
+#   innerhalb hmRampMinutes an und liegt höher, dieser (die Regel rampe setzt
+#   nur Zwischenwerte darunter). Ohne Profil keine Bewertung. hmHandDelta 0
+#   schaltet die Prüfung ab.
+# ----------------------------------------------------------------------------
+sub HeatManager_HandHigh {
+    my ($name, $t, $des) = @_;
+    my $d = HeatManager_A($name, "hmHandDelta");
+    return 0 if (!defined($d) || $d !~ /^\d+(?:\.\d+)?$/ || $d <= 0);
+    return 1 if (ReadingsVal($t, "mode", "") eq "boost");
+    my ($cur, $nxt, $left) = HeatManager_ProfileNow($t);
+    return 0 if (!$cur);
+    my $p = $cur->[2];
+    $p = $nxt->[2] if ($nxt && defined($left) && $left <= HeatManager_A($name, "hmRampMinutes") && $nxt->[2] > $p);
+    return ($des > $p + $d + 1e-9) ? 1 : 0;
 }
 
 # ============================================================================
@@ -1886,6 +1916,12 @@ sub HeatManager_Get {
           so viele Minuten zu kalt &rarr; +1 (Default <code>60</code>).</li>
       <li><a id="HeatManager-attr-hmRampIgnore"></a><b>hmRampIgnore</b><br>
           Minuten nach einem Sollwertsprung, die nicht gewertet werden (Default <code>90</code>).</li>
+      <li><a id="HeatManager-attr-hmHandDelta"></a><b>hmHandDelta</b><br>
+          liegt das Soll eines Thermostats mehr als so viele K über seinem Wochenprofil (oder steht es auf
+          <code>boost</code>), wurde es von Hand hochgedreht: der Raum zählt dann nicht für
+          curve und tag (weder Ventil noch &bdquo;zu kalt&ldquo;) und erscheint in
+          <code>excluded_rooms</code> als <code>hand</code>. Thermostate ohne Profil werden nicht
+          geprüft. <code>0</code> = aus (Default <code>0.5</code>).</li>
       <li><a id="HeatManager-attr-hmMinSamplesPct"></a><b>hmMinSamplesPct</b><br>
           Mindestanteil gemessener Zeit in %, sonst keine Entscheidung (Default <code>50</code>).</li>
     </ul>

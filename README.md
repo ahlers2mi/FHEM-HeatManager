@@ -42,6 +42,15 @@ rechnet und schreibt, was es tun würde (`sim_curve`, `sim_standby`,
 Standby-Logik (z. B. ein notify auf die Ventilstellungen) vorher deaktivieren,
 sonst schalten zwei Logiken gegeneinander.
 
+### Neu in v0.11.0
+
+- **Von Hand hochgedrehte Räume zählen nicht mehr** (`hmHandDelta`, Default 0,5 K):
+  liegt das Soll eines Thermostats mehr als 0,5 K über seinem Wochenprofil (oder steht es auf `boost`),
+  bleibt der Raum bei `curve` und `tag` außen vor – weder sein Ventil noch „zu kalt“
+  gehen in die Heizkurve ein. Anlass: das Bad wurde kurz auf 25 °C gedreht, erreichte das
+  nicht und hob am nächsten Morgen die Feineinstellung für das ganze Haus. Solche Räume
+  stehen in `excluded_rooms` als `MAX_…:hand`. `hmHandDelta 0` schaltet das ab.
+
 ### Neu in v0.10.1
 
 - Attributhilfe in FHEMWEB repariert: seit v0.9.1 standen die Attribute in Tabellen;
