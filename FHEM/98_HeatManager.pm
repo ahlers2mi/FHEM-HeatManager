@@ -73,7 +73,7 @@
 # keine eigene Hardware.
 #
 # Autor:    ahlers2mi
-# Version:  v0.11.0
+# Version:  v0.12.0
 # Lizenz:   GPL v2 oder höher (wie FHEM)
 ##############################################################################
 
@@ -89,7 +89,7 @@ use JSON::PP ();
 # Von fhem.pl bereitgestellte Globals.
 use vars qw($init_done %defs %attr $readingFnAttributes);
 
-my $HM_VERSION = "0.11.0";
+my $HM_VERSION = "0.12.0";
 
 # Regeln, die nur echt schalten, wenn sie in hmLive stehen - unabhängig von
 # hmSimulate und hmSimOnly. Für Regeln, die bei bestehenden Installationen
@@ -125,6 +125,7 @@ my %HM_defaults = (
     hmValveHigh         => 60,                                  # ein Raum im Mittel darüber -> +1
     hmColdDelta         => 0.5,                                 # K unter Soll gilt als zu kalt
     hmColdMinutes       => 60,                                  # so lange zu kalt -> +1
+    hmColdValve         => 80,                                  # "zu kalt" zählt nur, wenn das Ventil mindestens so weit offen ist (0 = immer)
     hmRampIgnore        => 90,                                  # min nach Sollwertsprung nicht werten
     hmHandDelta         => 0.5,                                 # mehr als so viele K über Profil = von Hand gedreht, nicht werten (0 = aus)
     hmMinSamplesPct     => 50,                                  # Mindestanteil gemessener Zeit
@@ -228,7 +229,7 @@ sub HeatManager_Initialize {
         . "hmHeater hmFineReading hmModeReading "
         # --- curve ---
         . "hmFineMin hmFineMax hmCheckTime hmValveLow hmValveHigh "
-        . "hmColdDelta hmColdMinutes hmRampIgnore hmHandDelta hmMinSamplesPct "
+        . "hmColdDelta hmColdMinutes hmColdValve hmRampIgnore hmHandDelta hmMinSamplesPct "
         # --- standby ---
         . "hmStandbyLow hmStandbyHigh hmStandbyMinTime hmStandbyModeOn hmStandbyModeOff "
         # --- ofen ---
@@ -374,7 +375,7 @@ sub HeatManager_Attr {
     if ($cmd eq "set" && $attr =~ /^hm(SunWindow|ClimaTimes)$/) {
         return "$attr: HH:MM-HH:MM erwartet" if ($val !~ /^\d\d:\d\d-\d\d:\d\d(,\d\d:\d\d-\d\d:\d\d)*$/);
     }
-    if ($cmd eq "set" && $attr =~ /^hm(FineMin|FineMax|SampleInterval|ValveLow|ValveHigh|ColdDelta|ColdMinutes|RampIgnore|MinSamplesPct|StandbyLow|StandbyHigh|StandbyMinTime|OvenBurn|OvenStore|OvenTemp|ClimaValve|ClimaValveMinutes|ClimaSetTemp|ClimaSoc|ClimaMinOutdoor|ClimaMinRun|ClimaMinOff|ClimaMaxStarts|OutageGridMin|OutageIndexBelow|SunPV|SunMinTemp|SunStep|SeasonOn|SeasonOff|SeasonDays)$/) {
+    if ($cmd eq "set" && $attr =~ /^hm(FineMin|FineMax|SampleInterval|ValveLow|ValveHigh|ColdDelta|ColdMinutes|ColdValve|RampIgnore|MinSamplesPct|StandbyLow|StandbyHigh|StandbyMinTime|OvenBurn|OvenStore|OvenTemp|ClimaValve|ClimaValveMinutes|ClimaSetTemp|ClimaSoc|ClimaMinOutdoor|ClimaMinRun|ClimaMinOff|ClimaMaxStarts|OutageGridMin|OutageIndexBelow|SunPV|SunMinTemp|SunStep|SeasonOn|SeasonOff|SeasonDays)$/) {
         return "$attr: Zahl erwartet" if ($val !~ /^-?\d+(\.\d+)?$/);
     }
     if ($attr eq "hmCheckTime" && $init_done && $hash) {
@@ -613,6 +614,7 @@ sub HeatManager_SampleRun {
     my $smap = HeatManager_SensorMap($name);
     my $ramp = HeatManager_A($name, "hmRampIgnore") * 60;
     my $cd   = HeatManager_A($name, "hmColdDelta");
+    my $cv   = HeatManager_A($name, "hmColdValve");
     my (%valve, %cold, %ramp, %excl);
     my ($sum, $n) = (0, 0);
 
@@ -655,10 +657,13 @@ sub HeatManager_SampleRun {
         }
         $valve{$t} = $v;                                   # zählt für die Heizkurve
 
-        # "zu kalt" nur mit echtem Raumsensor - der MAX-Fühler sitzt am Heizkörper
+        # "zu kalt" nur mit echtem Raumsensor - der MAX-Fühler sitzt am Heizkörper.
+        # Und nur, wenn das Ventil weit offen ist (hmColdValve, v0.12.0): hält das
+        # Thermostat das Ventil fast zu, weil sein Fühler am Heizkörper wärmer misst
+        # als der Raumsensor, hilft mehr Vorlauf nicht - das ist kein Fall für die Kurve.
         if ($smap->{$t}) {
             my $temp = ReadingsVal($smap->{$t}[0], $smap->{$t}[1], undef);
-            $cold{$t} = ($temp < $des - $cd) ? 1 : 0
+            $cold{$t} = ($temp < $des - $cd && $v >= $cv) ? 1 : 0
                 if (defined($temp) && $temp =~ /^-?[\d.]+$/);
         }
     }
@@ -1914,6 +1919,10 @@ sub HeatManager_Get {
           K unter Soll gilt als zu kalt (nur Räume mit hmRoomSensors) (Default <code>0.5</code>).</li>
       <li><a id="HeatManager-attr-hmColdMinutes"></a><b>hmColdMinutes</b><br>
           so viele Minuten zu kalt &rarr; +1 (Default <code>60</code>).</li>
+      <li><a id="HeatManager-attr-hmColdValve"></a><b>hmColdValve</b><br>
+          ein Raum zählt nur als zu kalt, solange sein Ventil mindestens so weit offen ist (Default <code>80</code> %).
+          Ist das Ventil weiter zu, regelt das Thermostat selbst ab (z. B. weil sein Fühler am Heizkörper
+          wärmer misst als der Raumsensor) &ndash; mehr Vorlauf hilft dann nicht. <code>0</code> = immer werten (Verhalten bis v0.11.0).</li>
       <li><a id="HeatManager-attr-hmRampIgnore"></a><b>hmRampIgnore</b><br>
           Minuten nach einem Sollwertsprung, die nicht gewertet werden (Default <code>90</code>).</li>
       <li><a id="HeatManager-attr-hmHandDelta"></a><b>hmHandDelta</b><br>

@@ -42,6 +42,15 @@ rechnet und schreibt, was es tun würde (`sim_curve`, `sim_standby`,
 Standby-Logik (z. B. ein notify auf die Ventilstellungen) vorher deaktivieren,
 sonst schalten zwei Logiken gegeneinander.
 
+### Neu in v0.12.0
+
+- **„Zu kalt“ zählt nur noch bei weit offenem Ventil** (`hmColdValve`, Default 80 %):
+  ein Raum mit Raumsensor hob bisher die Feineinstellung, sobald er länger als `hmColdMinutes`
+  unter Soll lag – auch wenn sein Thermostat das Ventil fast zu hielt, weil der Fühler am
+  Heizkörper wärmer misst als der Raumsensor. Mehr Vorlauf ändert daran nichts. Anlass: Schlafzimmer
+  205 min „zu kalt“ bei 11–20 % Ventil, am nächsten Morgen +1 für das ganze Haus. Abhilfe im Raum
+  selbst ist der Mess-Offset des Thermostats. `hmColdValve 0` stellt das alte Verhalten her.
+
 ### Neu in v0.11.0
 
 - **Von Hand hochgedrehte Räume zählen nicht mehr** (`hmHandDelta`, Default 0,5 K):
@@ -147,7 +156,7 @@ zeigt in der ersten Zeile, welche Regeln scharf sind.
 Siehe Commandref im Modul (`help HeatManager`). Die wichtigsten:
 `hmSimulate`, `hmLive`, `hmRules`, `hmThermostats`, `hmIgnore`, `hmRoomSensors`,
 `hmHeater`, `hmFineReading`, `hmModeReading`, `hmFineMin`/`hmFineMax`,
-`hmCheckTime`, `hmValveLow`/`hmValveHigh`, `hmColdDelta`/`hmColdMinutes`,
+`hmCheckTime`, `hmValveLow`/`hmValveHigh`, `hmColdDelta`/`hmColdMinutes`/`hmColdValve`,
 `hmRampIgnore`, `hmStandbyLow`/`hmStandbyHigh`/`hmStandbyMinTime`, `hmNotifyCmd`,
 `hmFlowSensor`, `hmFrostSensor`/`hmFrostOn`/`hmFrostOff`.
 
