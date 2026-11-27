@@ -21,7 +21,7 @@ ok(rd("sim_curve") =~ /C15.TemperaturFeineinstellung_HK2 -1/, "sim_curve protoko
 ok(rd("valve_avg_24h") < 10, "Keller (hmIgnore, Ventil 90) nicht im Mittel");
 
 print "\n=== Raum zu kalt -> +1 ===\n";
-day($h, 30, 20, 19, 20); HeatManager_Curve($h);
+day($h, 85, 20, 19, 20); HeatManager_Curve($h);   # Ventil weit offen (hmColdValve, v0.12.0)
 ok(rd("fine_target") == 1, "Ziel +1");
 ok(rd("cold_room") =~ /^MAX_A:/, "cold_room " . rd("cold_room"));
 

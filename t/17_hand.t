@@ -47,7 +47,7 @@ ok(rd("fine_target") == 0 && rd("cold_room") eq "none", "Ziel 0, cold_room none 
 
 print "\n=== Soll = Profil, Raum zu kalt -> zählt weiter ===\n";
 $h = setup(hmRules => "curve");
-tag24($h, 20, 19, 30);
+tag24($h, 20, 19, 85);   # Ventil weit offen (hmColdValve, v0.12.0)
 HeatManager_Curve($h);
 ok(rd("fine_target") == 1 && rd("excluded_rooms") eq "none", "Ziel +1, nichts ausgeblendet");
 
